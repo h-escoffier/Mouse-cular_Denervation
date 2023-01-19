@@ -51,7 +51,7 @@ plot_trimming <- function(x) {
 ## Analysis of SnRNA-Seq & ATAC-Seq 
 
 # 1. Data 
-In this part we will use Ctl-D data (see readme in the 'data' folder for more information concerning Ctl-D) 
+In this part we will use Ctl-D and D data (see readme in the 'data' folder for more information concerning Ctl-D and D) 
 
 ```{r}
 # Load the data 

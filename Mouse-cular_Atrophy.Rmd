@@ -7,6 +7,8 @@ output:
   html_document: default
 ---
 
+TODO: Find a way to directly attribute cluster to a type of cell based on literature data. (`Python` ?) 
+
 ```{r setup, include=FALSE}
 # Install librairies 
 knitr::opts_chunk$set(echo = TRUE)
@@ -46,12 +48,43 @@ plot_trimming <- function(x) {
   print(VnPlot)
   print(RNAcount_MTPer + RNAcount_RNAFeat)
 }
+
+# Normalisation, scaling, PCA & Dim 
+first_automatisation <- function(input_data){
+  # Normalisation with SCTransfrom
+  input_data <- SCTransform(input_data, vst.flavor = "v2", verbose = FALSE)
+  # Scaling
+  input_data <- FindVariableFeatures(input_data, selection.method = "vst", nfeatures = 2000)
+  all.genes <- rownames(input_data)
+  input_data <- ScaleData(input_data, features = all.genes)
+  # PCA + Plot
+  input_data <- RunPCA(input_data, npcs=50, features = VariableFeatures(object = input_data), verbose = FALSE)
+  print(DimPlot(input_data, reduction = "pca"))
+  # Elbow Plot 
+  print(ElbowPlot(input_data, ndims = 50))
+  return(input_data)
+}
+
+# Cluster, UMAP, Markers & Heatmap 
+second_automatisation <- function(input_data, dimensionality) {
+  # Clustering
+  input_data <- FindNeighbors(input_data, reduction = "pca", dims = 1:dimensionality, verbose = FALSE)
+  input_data <- FindClusters(input_data, resolution = 1.2, verbose = FALSE)
+  input_data <- RunUMAP(input_data, dims = 1:dimensionality, verbose = FALSE)
+  #Plot
+  print(DimPlot(input_data, reduction = "umap"))
+  input_data.markers <- FindAllMarkers(input_data, min.pct = 0.25, logfc.threshold = 0.5, only.pos = TRUE) # Verify the treshord 
+  input_data.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
+  print(input_data.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> top5)
+  print(DoHeatmap(input_data, features = top5$gene) + NoLegend())
+  return(input_data)
+}
 ```
 
 ## Analysis of SnRNA-Seq & ATAC-Seq 
 
 # 1. Data 
-In this part we will use Ctl-D and D data (see readme in the 'data' folder for more information concerning Ctl-D and D) 
+In this part we will use Ctl-D data (see readme in the 'data' folder for more information concerning Ctl-D) 
 
 ```{r}
 # Load the data 
@@ -86,9 +119,36 @@ plot_trimming(y.rna)
 # Trimming 
 x.rna <- subset(x.rna, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 8)
 y.rna <- subset(y.rna, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 8)
+
 # Visualisation after trimming 
 plot_trimming(x.rna)
 plot_trimming(y.rna)
+```
+# 2.X Create a subset 
+
+In order to analyse only some part of you data you can create a subset according to some carasteristics. 
+
+Source : https://satijalab.org/seurat/articles/essential_commands.html 
+
+```{r}
+x.rna.subset <- subset(x = x.rna, subset = Myh1 > 1)
+```
+
+
+
+# QUICK ANALYSIS 
+
+This code allows a quick analysis a the data with some fixed parameters describe below. 
+
+Parameters : 
+_Wip in Progress_ 
+
+```{r}
+data_to_analyse <- first_automatisation(input_data = x.rna.subset) # Input the data here and run. 
+```
+
+```{r}
+data_to_analyse <- second_automatisation(input_data = data_to_analyse, dimensionality = 9) # Change dimensionality 
 ```
 
 # 2.2 Normalisation
@@ -109,6 +169,7 @@ SCTransform Installation : https://satijalab.org/seurat/articles/sctransform_v2_
 x.rna <- SCTransform(x.rna, vst.flavor = "v2", verbose = FALSE)
 y.rna <- SCTransform(y.rna, vst.flavor = "v2", verbose = FALSE)
 ```
+
 # 2.3 Scaling & PCA 
 We apply a linear transformation also call ‘scaling’. It is a pre-processing step to dimensional reduction techniques as PCA.
 
@@ -123,13 +184,20 @@ all.genes <- rownames(y.rna)
 x.rna <- ScaleData(x.rna, features = all.genes)
 y.rna <- ScaleData(y.rna, features = all.genes)
 ```
+
 We then perform a PCA on the scaled data in the previous step. 
 
 ```{r}
 x.rna <- RunPCA(x.rna, npcs=30, features = VariableFeatures(object = x.rna), verbose = FALSE)
 y.rna <- RunPCA(y.rna, npcs=30, features = VariableFeatures(object = y.rna), verbose = FALSE)
+
+print(x.rna[["pca"]], dims = 1:5, nfeatures = 5)
+print(y.rna[["pca"]], dims = 1:5, nfeatures = 5)
+
+
 DimPlot(x.rna, reduction = "pca") + DimPlot(y.rna, reduction = "pca")
 ```
+
 Interpretation of the result : 
 
 # 2.4 Dimensionality 
@@ -148,25 +216,27 @@ Another alternative is to realise an Elbow plot.
 # Elbow Plot
 ElbowPlot(x.rna, ndims = 30) + ElbowPlot(y.rna, ndims = 30)
 ```
+
 Interpretation of the result : 
 
 # 2.5 Cluster the cells 
-We applies a graph-based clustering approach, building upon initial strategies in (Macosko et al). Importantly, the distance metric which drives the clustering analysis (based on previously identified PCs) remains the same. 
+We applies a graph-based clustering approach, building upon initial strategies in Macosko et al. Importantly, the distance metric which drives the clustering analysis (based on previously identified PCs) remains the same. 
 
-we first construct a KNN graph based on the euclidean distance in PCA space, and refine the edge weights between any two cells based on the shared overlap in their local neighborhoods (Jaccard similarity). This step is performed using the FindNeighbors() function, and takes as input the defined dimensionality of the dataset. (cf. 2.4)
+We first construct a KNN graph based on the euclidean distance in PCA space, and refine the edge weights between any two cells based on the shared overlap in their local neighborhoods (Jaccard similarity). This step is performed using the `FindNeighbors()` function, and takes as input the defined dimensionality of the dataset. (cf. 2.4)
 
-The FindClusters() function implements this procedure, and contains a resolution parameter that sets the ‘granularity’ of the downstream clustering, with increased values leading to a greater number of clusters. The autors of XXX package find that setting this parameter between 0.4-1.2 typically returns good results for single-cell datasets of around 3K cells. Optimal resolution often increases for larger datasets. 
+The `FindClusters()` function implements this procedure, and contains a resolution parameter that sets the ‘granularity’ of the downstream clustering, with increased values leading to a greater number of clusters. The authors of XXX package find that setting this parameter between 0.4-1.2 typically returns good results for single-cell datasets of around 3K cells. Optimal resolution often increases for larger datasets. 
 
 ```{r}
 #Input the dimesionality of the dataset find at the 2.4 section 
-x.data_set.dim = 30
-y.data_set.dim = 30
+x.data_set.dim = 15
+y.data_set.dim = 13
 
 x.rna <- FindNeighbors(x.rna, reduction = "pca", dims = 1:x.data_set.dim, verbose = FALSE)
 y.rna <- FindNeighbors(y.rna, reduction = "pca", dims = 1:x.data_set.dim, verbose = FALSE)
-x.rna <- FindClusters(x.rna, resolution = 0.7, verbose = FALSE)
-y.rna <- FindClusters(y.rna, resolution = 0.7, verbose = FALSE)
+x.rna <- FindClusters(x.rna, resolution = 1.2, verbose = FALSE)
+y.rna <- FindClusters(y.rna, resolution = 1.2, verbose = FALSE)
 ```
+
 # 2.6 Non-linear Dimensional Reduction 
 Lorem Ipsum 
 
@@ -178,42 +248,44 @@ y.rna <- RunUMAP(y.rna, dims = 1:y.data_set.dim, verbose = FALSE)
 DimPlot(x.rna, reduction = "umap") + DimPlot(y.rna, reduction = "umap")
 ```
 # 2.7 Finding differentialy expressed features
-We are trying to find markers that define clusters via differential expression. You can find markers for a single cluster with the function 'FindMarkers' or for all clusters with 'FindAllMarkers'
+We are trying to find markers that define clusters via differential expression. You can find markers for a single cluster with the function 'FindMarkers' or for all clusters with `FindAllMarkers`
 
 ```{r}
 #Find markers 
-x.rna.markers <- FindAllMarkers(x.rna, min.pct = 0.25, logfc.threshold = 0.5, only.pos = TRUE)
+x.rna.markers <- FindAllMarkers(x.rna, min.pct = 0.25, logfc.threshold = 0.75, only.pos = TRUE)
 x.rna.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
-y.rna.markers <- FindAllMarkers(y.rna, min.pct = 0.25, logfc.threshold = 0.5, only.pos = TRUE)
+y.rna.markers <- FindAllMarkers(y.rna, min.pct = 0.25, logfc.threshold = 0.75, only.pos = TRUE)
 y.rna.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
 ```
 Once the markers of each cluster are explained with the help of the previous code we now try to visualize our results. Here, we visualize the genes differently expressed in cluster 3: Abca8a & Ebf1
 
-After we generates an expression heatmap. In this case, we are plotting the top 10 markers (or all markers if less than 10) for each cluster.
+After we generates an expression heatmap. In this case, we are plotting the top 5 markers (or all markers if less than 5) for each cluster.
 
 ```{r}
 # Plot
-VlnPlot(x.rna, features = c("Gm26917", "Gm42418", "Myh4"))
-FeaturePlot(x.rna, features = c("Gm26917", "Gm42418", "Myh4"))
+# VlnPlot(x.rna, features = c("Myh1", "Agbl1", "Ank2"))
+# FeaturePlot(x.rna, features = c("Myh1", "Agbl1", "Ank2"))
 # Heatmap 
-x.rna.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC) -> top10
-DoHeatmap(x.rna, features = top10$gene) + NoLegend()
+x.rna.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> top5
+DoHeatmap(x.rna, features = top5$gene) + NoLegend()
 ```
+
 # 2.8 Assign cell type to each cluster 
 Lorem Ipsum 
 
 ```{r}
-x.rna.cluster <- c("")
+x.rna.cluster <- c("0", "FastIIa", "MN Myh4", "FastIIb", "FastIIb", "Fibro3", "FastIIa", "MN Myh4", "MT", "unknown", "unknown", "MN Myh4", "MuSC")
 names(x.rna.cluster) <- levels(x.rna)
 x.rna <- RenameIdents(x.rna, x.rna.cluster)
 DimPlot(x.rna, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
 ```
+
 # Appendices : Export the data for more analysis 
 
 ```{r}
 # Export the data at the .csv format 
-x.rna.matrix <-matrix(x.rna@assays[["SCT"]]@var.features)
-y.rna.matrix <-matrix(y.rna@assays[["SCT"]]@var.features)
+x.rna.matrix <-matrix(x.rna@assays[["SCT"]])
+y.rna.matrix <-matrix(y.rna@assays[["SCT"]])
 write.matrix(x.rna.matrix,file="Ctl-D_data.csv")
 write.matrix(y.rna.matrix,file="D_data.csv")
 ```

@@ -8,36 +8,25 @@ output:
 ---
 
 TODO: Find a way to directly attribute cluster to a type of cell based on literature data. (`Python` ?) 
+      Parallelization : https://satijalab.org/seurat/articles/future_vignette.html
 
 ```{r setup, include=FALSE}
 # Install librairies 
 knitr::opts_chunk$set(echo = TRUE)
 library(Seurat)
 # library(Signac) <- Not working 
+library(clustree)
 library(patchwork)
 library(dplyr)
 library(ggplot2)
 library(here)
 library(MASS)
+library(future)
 ```
 
 # Functions
 
 ```{r}
-# Function for loading snRNA-seq & ATACseq
-loading <- function(data_type, r_or_f) {
-# Load the data 
-x.data <- Read10X(data.dir = here("data",data_type,r_or_f))
-# Initialize the Seurat object with non-normalized data.
-x.rna <- x.data$`Gene Expression`
-x.atac <- x.data$Peaks
-# x + Add the mitochondrial information
-x.rna <- CreateSeuratObject(counts = x.rna, project = data_type, min.cells = 3, min.features = 200)
-x.rna[["percent.mt"]] <- PercentageFeatureSet(x.rna, pattern = "^mt-")
-# TODO : Handle the return problem 
-return(c(x.rna, x.atac))
-}
-
 # 
 plot_trimming <- function(x) {
   # Plots 
@@ -49,10 +38,12 @@ plot_trimming <- function(x) {
   print(RNAcount_MTPer + RNAcount_RNAFeat)
 }
 
+# Update the automatization for a merge dataset 
+
 # Normalisation, scaling, PCA & Dim 
 first_automatisation <- function(input_data){
   # Normalisation with SCTransfrom
-  input_data <- SCTransform(input_data, vst.flavor = "v2", verbose = FALSE)
+  # input_data <- SCTransform(input_data, vst.flavor = "v2", verbose = FALSE)
   # Scaling
   input_data <- FindVariableFeatures(input_data, selection.method = "vst", nfeatures = 2000)
   all.genes <- rownames(input_data)
@@ -66,17 +57,18 @@ first_automatisation <- function(input_data){
 }
 
 # Cluster, UMAP, Markers & Heatmap 
-second_automatisation <- function(input_data, dimensionality) {
+second_automatisation <- function(input_data, dimensionality) {  # rework this function for integrated data 
   # Clustering
   input_data <- FindNeighbors(input_data, reduction = "pca", dims = 1:dimensionality, verbose = FALSE)
-  input_data <- FindClusters(input_data, resolution = 1.2, verbose = FALSE)
-  input_data <- RunUMAP(input_data, dims = 1:dimensionality, verbose = FALSE)
+  input_data <- FindClusters(input_data, resolution = 0.5, verbose = FALSE)
+  input_data <- RunUMAP(input_data, dims = 1:dimensionality)
+  DefaultAssay(input_data) <- 'RNA'
   #Plot
   print(DimPlot(input_data, reduction = "umap"))
   input_data.markers <- FindAllMarkers(input_data, min.pct = 0.25, logfc.threshold = 0.5, only.pos = TRUE) # Verify the treshord 
-  input_data.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
-  print(input_data.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> top5)
-  print(DoHeatmap(input_data, features = top5$gene) + NoLegend())
+  input_data.markers %>% group_by(cluster) %>% slice_max(n = 2, order_by = avg_log2FC)
+  print(input_data.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_log2FC) -> top2)
+  # print(DoHeatmap(input_data, features = top2$gene) + NoLegend())
   return(input_data)
 }
 ```
@@ -84,23 +76,33 @@ second_automatisation <- function(input_data, dimensionality) {
 ## Analysis of SnRNA-Seq & ATAC-Seq 
 
 # 1. Data 
-In this part we will use Ctl-D data (see readme in the 'data' folder for more information concerning Ctl-D) 
+In this part we will use Ctl-D data and D (see readme in the 'data' folder for more information) 
 
 ```{r}
 # Load the data 
 # x correspond to control data, y correspond to D(enervated) data
-x.data <- Read10X(data.dir = here("data","Ctl-D","filtered_feature_bc_matrix"))
-y.data <- Read10X(data.dir = here("data","D","filtered_feature_bc_matrix"))
+x.data <- Read10X(data.dir = here("data","Ctl-D", "for_SEURAT", "filtered_feature_bc_matrix"))
+y.data <- Read10X(data.dir = here("data","D", "for_SEURAT", "filtered_feature_bc_matrix"))
 # Initialize the Seurat object with non-normalized data.
 x.rna <- x.data$`Gene Expression`
 x.atac <- x.data$Peaks
 y.rna <- y.data$`Gene Expression`
 y.atac <- y.data$Peaks
-# x + Add the mitochondrial information
+# Create a Seurat Object + Add the mitochondrial information
 x.rna <- CreateSeuratObject(counts = x.rna, project = "Ctl-D", min.cells = 3, min.features = 200)
 x.rna[["percent.mt"]] <- PercentageFeatureSet(x.rna, pattern = "^mt-")
 y.rna <- CreateSeuratObject(counts = y.rna, project = "D", min.cells = 3, min.features = 200)
 y.rna[["percent.mt"]] <- PercentageFeatureSet(y.rna, pattern = "^mt-")
+```
+
+# 2. Merging two dataset 
+
+```{r}
+ctl_d.combined <- merge(x = x.rna, y = y.rna, add.cell.ids = c("CTL", "D"), project = "Ctl_D_Analysis")
+# Plot the number of nuclei
+table(ctl_d.combined$orig.ident)
+# Split the data into a list 
+ctl_d.list <- SplitObject(object = ctl_d.combined, split.by = "orig.ident")
 ```
 
 # 2. scRNA-Seq
@@ -110,45 +112,17 @@ y.rna[["percent.mt"]] <- PercentageFeatureSet(y.rna, pattern = "^mt-")
 
 The filters applied are : 
   - 200 > Feature counts > 2,500
-  - Mitochondrial counts < 8% 
+  - Mitochondrial counts < 0.8% 
   
 ```{r}
-# Visualisation before trimming
-plot_trimming(x.rna)
-plot_trimming(y.rna)
-# Trimming 
-x.rna <- subset(x.rna, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 8)
-y.rna <- subset(y.rna, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 8)
-
-# Visualisation after trimming 
-plot_trimming(x.rna)
-plot_trimming(y.rna)
-```
-# 2.X Create a subset 
-
-In order to analyse only some part of you data you can create a subset according to some carasteristics. 
-
-Source : https://satijalab.org/seurat/articles/essential_commands.html 
-
-```{r}
-x.rna.subset <- subset(x = x.rna, subset = Myh1 > 1)
-```
-
-
-
-# QUICK ANALYSIS 
-
-This code allows a quick analysis a the data with some fixed parameters describe below. 
-
-Parameters : 
-_Wip in Progress_ 
-
-```{r}
-data_to_analyse <- first_automatisation(input_data = x.rna.subset) # Input the data here and run. 
-```
-
-```{r}
-data_to_analyse <- second_automatisation(input_data = data_to_analyse, dimensionality = 9) # Change dimensionality 
+for (i in 1:length(x = ctl_d.list)) {
+  # Visualization before trimming
+  plot_trimming(ctl_d.list[[i]])
+  # Trimming 
+  ctl_d.list[[i]] <- subset(ctl_d.list[[i]], subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 0.8)
+  # Visualization after trimming 
+  plot_trimming(ctl_d.list[[i]])
+  }
 ```
 
 # 2.2 Normalisation
@@ -157,69 +131,77 @@ Data normalization can be achieved in several ways:
   - LogNormalize: Feature counts for each cell are divided by the total counts for that cell and multiplied by the scale.factor.
   - CLR: Centered log ratio transformation 
   - RC: Relative counts, feature counts for each cell are divided by the total counts for that cell and multiplied by the scale.factor.
-- SCTransform: Lorem Ipsum 
+- SCTransform: 
+  _Wip in Progress_ 
 
 SCTransform Installation : https://satijalab.org/seurat/articles/sctransform_v2_vignette.html 
 
 ```{r}
-# NormalizeData
-# x.rna <- NormalizeData(x.rna, normalization.method = "LogNormalize", scale.factor = 10000)
-# y.rna <- NormalizeData(y.rna, normalization.method = "LogNormalize", scale.factor = 10000)
-# SCTransfrom
-x.rna <- SCTransform(x.rna, vst.flavor = "v2", verbose = FALSE)
-y.rna <- SCTransform(y.rna, vst.flavor = "v2", verbose = FALSE)
+# NormalizeData 
+for (i in 1:length(x = ctl_d.list)) {
+  ctl_d.list[[i]] <- NormalizeData(ctl_d.list[[i]], normalization.method = "LogNormalize", scale.factor = 10000)
+  # Calculate a subset of features that exhibit high cell-to-cell variation in the dataset 
+  ctl_d.list[[i]] <- FindVariableFeatures(ctl_d.list[[i]], selection.method = "vst", nfeatures = 2000)
+  }
 ```
 
-# 2.3 Scaling & PCA 
+```{r}
+# SCTransform
+ctl_d.list <- lapply( X = ctl_d.list, FUN = SCTransform)
+features <- SelectIntegrationFeatures(object.list = ctl_d.list, nfeatures = 5000)
+ctl_d.list <- PrepSCTIntegration(object.list = ctl_d.list, anchor.features = features)
+```
+
+# 2.3 Integration 
+_Work in Progress_
+
+```{r}
+# Integration with NormaliseData()
+ctl_d.combined.anchors <- FindIntegrationAnchors(object.list = ctl_d.list, dims = 1:30)
+ctl_d.integrated <- IntegrateData(anchorset = ctl_d.combined.anchors, dims = 1:30)
+DefaultAssay(ctl_d.integrated) <- "integrated"
+```
+
+```{r}
+# Integration with SCTransform()
+ctl_d.combined.anchors <- FindIntegrationAnchors(object.list = ctl_d.list, normalization.method = 'SCT', anchor.features = features)
+ctl_d.integrated <- IntegrateData(anchorset = ctl_d.combined.anchors, normalization.method = 'SCT')
+```
+
+# 2.4 Scaling 
 We apply a linear transformation also call ‘scaling’. It is a pre-processing step to dimensional reduction techniques as PCA.
 
 ```{r}
-# DO NOT RUN 
-# Calculate a subset of features that exhibit high cell-to-cell variation in the dataset 
-x.rna <- FindVariableFeatures(x.rna, selection.method = "vst", nfeatures = 2000)
-y.rna <- FindVariableFeatures(y.rna, selection.method = "vst", nfeatures = 2000)
-# 
-all.genes <- rownames(x.rna)
-all.genes <- rownames(y.rna)
-x.rna <- ScaleData(x.rna, features = all.genes)
-y.rna <- ScaleData(y.rna, features = all.genes)
+all.genes <- rownames(ctl_d.integrated)
+ctl_d.integrated <- ScaleData(ctl_d.integrated, features = all.genes)
 ```
 
-We then perform a PCA on the scaled data in the previous step. 
+We then perform a PCA on the scaled data. 
 
 ```{r}
-x.rna <- RunPCA(x.rna, npcs=30, features = VariableFeatures(object = x.rna), verbose = FALSE)
-y.rna <- RunPCA(y.rna, npcs=30, features = VariableFeatures(object = y.rna), verbose = FALSE)
-
-print(x.rna[["pca"]], dims = 1:5, nfeatures = 5)
-print(y.rna[["pca"]], dims = 1:5, nfeatures = 5)
-
-
-DimPlot(x.rna, reduction = "pca") + DimPlot(y.rna, reduction = "pca")
+ctl_d.integrated <- RunPCA(ctl_d.integrated, npcs=50, features = VariableFeatures(object = ctl_d.integrated), verbose = FALSE)
+print(ctl_d.integrated[["pca"]], dims = 1:5, nfeatures = 5)
+DimPlot(ctl_d.integrated, reduction = "pca")
 ```
 
-Interpretation of the result : 
-
-# 2.4 Dimensionality 
+# 2.5 Dimensionality 
 The JackStraw procedure help to overcome the technical noise present in scRNA-seq data and identify the number of principal components to include in the analysis. This approach can lead to a robust compression of the dataset and improve the accuracy of the analysis.
 
 Another alternative is to realise an Elbow plot. 
 
 ```{r}
 # JackStraw Procedure
-# x.rna <- JackStraw(x.rna, num.replicate = 100)
-# y.rna <- JackStraw(y.rna, num.replicate = 100)
-# x.rna <- ScoreJackStraw(x.rna, dims = 1:20)
-# y.rna <- ScoreJackStraw(y.rna, dims = 1:20)
+# ctl_d.integrated <- JackStraw(ctl_d.integrated, num.replicate = 100)
+# ctl_d.integrated <- ScoreJackStraw(ctl_d.integrated, dims = 1:20)
 # Plot
-# JackStrawPlot(x.rna, dims = 1:20) + JackStrawPlot(y.rna, dims = 1:20)
+# JackStrawPlot(ctl_d.integrated, dims = 1:20)
 # Elbow Plot
-ElbowPlot(x.rna, ndims = 30) + ElbowPlot(y.rna, ndims = 30)
+ElbowPlot(ctl_d.integrated, ndims = 50)
 ```
 
 Interpretation of the result : 
 
-# 2.5 Cluster the cells 
+# 2.6 Cluster the cells 
 We applies a graph-based clustering approach, building upon initial strategies in Macosko et al. Importantly, the distance metric which drives the clustering analysis (based on previously identified PCs) remains the same. 
 
 We first construct a KNN graph based on the euclidean distance in PCA space, and refine the edge weights between any two cells based on the shared overlap in their local neighborhoods (Jaccard similarity). This step is performed using the `FindNeighbors()` function, and takes as input the defined dimensionality of the dataset. (cf. 2.4)
@@ -228,50 +210,76 @@ The `FindClusters()` function implements this procedure, and contains a resoluti
 
 ```{r}
 #Input the dimesionality of the dataset find at the 2.4 section 
-x.data_set.dim = 15
-y.data_set.dim = 13
+ctl_d.integrated.data_set.dim = 14
 
-x.rna <- FindNeighbors(x.rna, reduction = "pca", dims = 1:x.data_set.dim, verbose = FALSE)
-y.rna <- FindNeighbors(y.rna, reduction = "pca", dims = 1:x.data_set.dim, verbose = FALSE)
-x.rna <- FindClusters(x.rna, resolution = 1.2, verbose = FALSE)
-y.rna <- FindClusters(y.rna, resolution = 1.2, verbose = FALSE)
+ctl_d.integrated <- FindNeighbors(ctl_d.integrated, reduction = "pca", dims = 1:ctl_d.integrated.data_set.dim, verbose = FALSE)
+ctl_d.integrated <- FindClusters(ctl_d.integrated, resolution = 2, verbose = FALSE)
 ```
 
-# 2.6 Non-linear Dimensional Reduction 
-Lorem Ipsum 
+# Facultative Step : Create a subset 
+In order to analyse only some part of you data you can create a subset according to some carasteristics. 
+
+Source : 
+  - https://satijalab.org/seurat/articles/essential_commands.html 
+  - https://github.com/satijalab/seurat/issues/1890 
+
+```{r}
+# TODO: Find the values for each genes 
+Idents(x.rna, WhichCells(object = x.rna, expression = Myh1 > 2 , slot = 'data')) <- 'Myh1'
+Idents(x.rna, WhichCells(object = x.rna, expression = Myh2 > 3, slot = 'data')) <- 'Myh2'
+genes <- FindMarkers(x.rna, ident.1 = 'Myh1', ident.2 = 'Myh2' )
+print(genes)
+```
+
+# 2.7 Non-linear Dimensional Reduction 
+_Wip in Progress_ 
 
 ```{r}
 # 
-x.rna <- RunUMAP(x.rna, dims = 1:x.data_set.dim, verbose = FALSE)
-y.rna <- RunUMAP(y.rna, dims = 1:y.data_set.dim, verbose = FALSE)
+ctl_d.integrated <- RunUMAP(ctl_d.integrated, dims = 1:ctl_d.integrated.data_set.dim, verbose = FALSE)  # ,umap.method = 'umap-learn', metric = "correlation"
+DefaultAssay(ctl_d.integrated) <- 'RNA'
 #Plot
-DimPlot(x.rna, reduction = "umap") + DimPlot(y.rna, reduction = "umap")
+DimPlot(ctl_d.integrated, reduction = "umap")
+DimPlot(object = ctl_d.integrated, reduction = "umap", group.by = "orig.ident", label = FALSE)
+DimPlot(ctl_d.integrated, reduction = "umap", split.by = "orig.ident")
 ```
-# 2.7 Finding differentialy expressed features
+
+# 2.8 Finding differentialy expressed features
 We are trying to find markers that define clusters via differential expression. You can find markers for a single cluster with the function 'FindMarkers' or for all clusters with `FindAllMarkers`
 
 ```{r}
 #Find markers 
-x.rna.markers <- FindAllMarkers(x.rna, min.pct = 0.25, logfc.threshold = 0.75, only.pos = TRUE)
-x.rna.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
-y.rna.markers <- FindAllMarkers(y.rna, min.pct = 0.25, logfc.threshold = 0.75, only.pos = TRUE)
-y.rna.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
+ctl_d.integrated.markers <- FindAllMarkers(ctl_d.integrated, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
+ctl_d.integrated.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
 ```
-Once the markers of each cluster are explained with the help of the previous code we now try to visualize our results. Here, we visualize the genes differently expressed in cluster 3: Abca8a & Ebf1
+Once the markers of each cluster are explained with the help of the previous code we now try to visualize our results. Here, we visualize the genes differently expressed in cluster 3: 
 
 After we generates an expression heatmap. In this case, we are plotting the top 5 markers (or all markers if less than 5) for each cluster.
 
 ```{r}
 # Plot
-# VlnPlot(x.rna, features = c("Myh1", "Agbl1", "Ank2"))
-# FeaturePlot(x.rna, features = c("Myh1", "Agbl1", "Ank2"))
+# VlnPlot(ctl_d.integrated, features = ("Ttn"))
+FeaturePlot(ctl_d.integrated, features = c("Ttn"))
+FeaturePlot(ctl_d.integrated, features = c("Myh1", "Myh2", "Myh4", "Myh7"))
+# Features Plot for cluster identification 
+# FeaturePlot(ctl_d.integrated, features = c("Myh7"))
 # Heatmap 
-x.rna.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> top5
-DoHeatmap(x.rna, features = top5$gene) + NoLegend()
+ctl_d.integrated.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_log2FC) -> top2
+DoHeatmap(ctl_d.integrated, features = top2$gene) + NoLegend() 
 ```
 
-# 2.8 Assign cell type to each cluster 
-Lorem Ipsum 
+# 2.9 Clustree
+_Wip in Progress_ 
+
+```{r}
+# clustree(sct.data, prefix = seurat_clusters)
+```
+
+# 3. ATAC-Seq 
+_Wip in Progress_ 
+
+# Facultative Step: Assign cell type to each cluster 
+_Wip in Progress_ 
 
 ```{r}
 x.rna.cluster <- c("0", "FastIIa", "MN Myh4", "FastIIb", "FastIIb", "Fibro3", "FastIIa", "MN Myh4", "MT", "unknown", "unknown", "MN Myh4", "MuSC")
@@ -280,13 +288,18 @@ x.rna <- RenameIdents(x.rna, x.rna.cluster)
 DimPlot(x.rna, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
 ```
 
-# Appendices : Export the data for more analysis 
+# Appendices 1: Export the data for more analysis 
 
 ```{r}
 # Export the data at the .csv format 
-x.rna.matrix <-matrix(x.rna@assays[["SCT"]])
-y.rna.matrix <-matrix(y.rna@assays[["SCT"]])
-write.matrix(x.rna.matrix,file="Ctl-D_data.csv")
-write.matrix(y.rna.matrix,file="D_data.csv")
+ctl_d.matrix <-matrix(ctl_d.integrated@assays[["integrated"]]@var.features)
+# y.rna.matrix <-matrix(y.rna@assays[["SCT"]]@var.features)
+write.matrix(ctl_d.matrix,file="all_genes_ctl_d.csv")
+# write.matrix(y.rna.matrix,file="D_data.csv")
 ```
 
+# Appendices 2: Save the data 
+
+```{r}
+saveRDS(input_data, file = "../output/name_of_your_file.rds")
+```

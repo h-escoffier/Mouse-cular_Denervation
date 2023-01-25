@@ -11,17 +11,20 @@ TODO: Find a way to directly attribute cluster to a type of cell based on litera
       Parallelization : https://satijalab.org/seurat/articles/future_vignette.html
 
 ```{r setup, include=FALSE}
-# Install librairies 
 knitr::opts_chunk$set(echo = TRUE)
+# Install libraries 
 library(Seurat)
-# library(Signac) <- Not working 
+library(Signac) 
 library(clustree)
+# Additional 
 library(patchwork)
 library(dplyr)
 library(ggplot2)
 library(here)
 library(MASS)
 library(future)
+# Genome 
+# library(EnsDb.Mmusculus.v79) # Issue Related to R version  
 ```
 
 # Functions
@@ -79,7 +82,7 @@ second_automatisation <- function(input_data, dimensionality) {  # rework this f
 In this part we will use Ctl-D data and D (see readme in the 'data' folder for more information) 
 
 ```{r}
-# Load the data 
+# Load the data for SnRNA-Seq Analysis
 # x correspond to control data, y correspond to D(enervated) data
 x.data <- Read10X(data.dir = here("data","Ctl-D", "for_SEURAT", "filtered_feature_bc_matrix"))
 y.data <- Read10X(data.dir = here("data","D", "for_SEURAT", "filtered_feature_bc_matrix"))
@@ -106,7 +109,7 @@ ctl_d.list <- SplitObject(object = ctl_d.combined, split.by = "orig.ident")
 ```
 
 # 2. scRNA-Seq
-## 2.1. QC and Trimming 
+## 2.1. Trimming 
 
 /!\ TODO : Remove the doublet with DoubletFinder
 
@@ -213,7 +216,10 @@ The `FindClusters()` function implements this procedure, and contains a resoluti
 ctl_d.integrated.data_set.dim = 14
 
 ctl_d.integrated <- FindNeighbors(ctl_d.integrated, reduction = "pca", dims = 1:ctl_d.integrated.data_set.dim, verbose = FALSE)
-ctl_d.integrated <- FindClusters(ctl_d.integrated, resolution = 2, verbose = FALSE)
+# Select a range of resolution for Clustree 
+resolution.range <- seq(from = 0, to = 1, by = 0.2)
+ctl_d.integrated <- FindClusters(object = ctl_d.integrated, resolution = resolution.range)
+# ctl_d.integrated <- FindClusters(ctl_d.integrated, resolution = 0.4, verbose = FALSE)
 ```
 
 # Facultative Step : Create a subset 
@@ -237,11 +243,11 @@ _Wip in Progress_
 ```{r}
 # 
 ctl_d.integrated <- RunUMAP(ctl_d.integrated, dims = 1:ctl_d.integrated.data_set.dim, verbose = FALSE)  # ,umap.method = 'umap-learn', metric = "correlation"
-DefaultAssay(ctl_d.integrated) <- 'RNA'
+# DefaultAssay(ctl_d.integrated) <- 'RNA' #### HeatMAP ?? 
 #Plot
 DimPlot(ctl_d.integrated, reduction = "umap")
 DimPlot(object = ctl_d.integrated, reduction = "umap", group.by = "orig.ident", label = FALSE)
-DimPlot(ctl_d.integrated, reduction = "umap", split.by = "orig.ident")
+DimPlot(ctl_d.integrated, reduction = "umap", split.by = "orig.ident", label = TRUE)
 ```
 
 # 2.8 Finding differentialy expressed features
@@ -260,23 +266,56 @@ After we generates an expression heatmap. In this case, we are plotting the top 
 # Plot
 # VlnPlot(ctl_d.integrated, features = ("Ttn"))
 FeaturePlot(ctl_d.integrated, features = c("Ttn"))
-FeaturePlot(ctl_d.integrated, features = c("Myh1", "Myh2", "Myh4", "Myh7"))
+FeaturePlot(ctl_d.integrated, features = c("Myh1", "Myh2", "Myh10", "Myh9"))
 # Features Plot for cluster identification 
 # FeaturePlot(ctl_d.integrated, features = c("Myh7"))
 # Heatmap 
-ctl_d.integrated.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_log2FC) -> top2
-DoHeatmap(ctl_d.integrated, features = top2$gene) + NoLegend() 
+ctl_d.integrated.markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top5
+DoHeatmap(ctl_d.integrated, features = top5$gene) + NoLegend() 
 ```
 
 # 2.9 Clustree
 _Wip in Progress_ 
 
 ```{r}
-# clustree(sct.data, prefix = seurat_clusters)
+head(ctl_d.integrated@meta.data)
+clustree(ctl_d.integrated, prefix = 'integrated_snn_res.')
 ```
 
 # 3. ATAC-Seq 
 _Wip in Progress_ 
+
+# 3.1 Load data 
+
+```{r}
+# Load file  
+inputdata.10x <- Read10X_h5(data.dir = here("data","Ctl-D", "for_SIGNAC", "filtered_feature_bc_matrix.h5")) 
+# Extract RNA and ATAC data
+x.rna <- inputdata.10x$`Gene Expression`
+x.atac <- inputdata.10x$Peaks
+# Create Seurat object with only snRNA data 
+x.multi <- CreateSeuratObject(counts = x.rna)
+x.multi[["percent.mt"]] <- PercentageFeatureSet(x.multi, pattern = "^mt-")
+# Adding ATAC-seq data
+grange.counts <- StringToGRanges(rownames(x.atac), sep = c(":", "-"))
+grange.use <- seqnames(grange.counts) %in% standardChromosomes(grange.counts)
+x.atac <- x.atac[as.vector(grange.use), ]
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotations) <- 'UCSC'
+genome(annotations) <- "mm10"
+
+frag.file <- "../data/pbmc_granulocyte_sorted_10k_atac_fragments.tsv.gz"
+chrom_assay <- CreateChromatinAssay(
+   counts = atac_counts,
+   sep = c(":", "-"),
+   genome = 'hg38',
+   fragments = frag.file,
+   min.cells = 10,
+   annotation = annotations
+ )
+pbmc[["ATAC"]] <- chrom_assay
+```
+
 
 # Facultative Step: Assign cell type to each cluster 
 _Wip in Progress_ 

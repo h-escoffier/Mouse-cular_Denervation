@@ -25,6 +25,8 @@ library(MASS)
 library(future)
 # Genome 
 # library(EnsDb.Mmusculus.v79) # Issue Related to R version  
+# install.packages('BiocManager') 
+# BiocManager::install('limma')
 ```
 
 # Functions
@@ -41,12 +43,19 @@ plot_trimming <- function(x) {
   print(RNAcount_MTPer + RNAcount_RNAFeat)
 }
 
-# Update the automatization for a merge dataset 
-
+# Analyse of a single dataset 
 # Normalisation, scaling, PCA & Dim 
 first_automatisation <- function(input_data){
+  # Visualization before trimming
+  print(plot_trimming(input_data))
+  # Trimming 
+  input_data <- subset(input_data, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 0.8)
+  # Visualization after trimming 
+  plot_trimming(input_data)
   # Normalisation with SCTransfrom
-  # input_data <- SCTransform(input_data, vst.flavor = "v2", verbose = FALSE)
+  # input_data <- SCTransform(input_data, vst.flavor = "v2", verbose = FALSE, vars.to.regress = "percent.mt")
+  # Normalisation with LogNormalize 
+  input_data <- NormalizeData(input_data, normalization.method = "LogNormalize", scale.factor = 10000)
   # Scaling
   input_data <- FindVariableFeatures(input_data, selection.method = "vst", nfeatures = 2000)
   all.genes <- rownames(input_data)
@@ -60,18 +69,30 @@ first_automatisation <- function(input_data){
 }
 
 # Cluster, UMAP, Markers & Heatmap 
-second_automatisation <- function(input_data, dimensionality) {  # rework this function for integrated data 
+second_automatisation_clustree <- function(input_data, dimensionality) {
   # Clustering
   input_data <- FindNeighbors(input_data, reduction = "pca", dims = 1:dimensionality, verbose = FALSE)
-  input_data <- FindClusters(input_data, resolution = 0.5, verbose = FALSE)
+  resolution.range <- seq(from = 0, to = 1, by = 0.2)
+  input_data <- FindClusters(object = input_data, resolution = resolution.range)
   input_data <- RunUMAP(input_data, dims = 1:dimensionality)
   DefaultAssay(input_data) <- 'RNA'
   #Plot
-  print(DimPlot(input_data, reduction = "umap"))
-  input_data.markers <- FindAllMarkers(input_data, min.pct = 0.25, logfc.threshold = 0.5, only.pos = TRUE) # Verify the treshord 
-  input_data.markers %>% group_by(cluster) %>% slice_max(n = 2, order_by = avg_log2FC)
-  print(input_data.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_log2FC) -> top2)
-  # print(DoHeatmap(input_data, features = top2$gene) + NoLegend())
+  print(DimPlot(input_data, reduction = "umap", label = TRUE))
+  input_data.markers <- FindAllMarkers(input_data, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE) # Verify the treshord 
+  print(head(input_data@meta.data))
+  print(clustree(input_data, prefix = 'RNA_snn_res.'))
+  return(input_data)
+}
+
+second_automatisation_simple <- function(input_data, dimensionality, choose.resolution) { 
+  # Clustering
+  input_data <- FindNeighbors(input_data, reduction = "pca", dims = 1:dimensionality, verbose = FALSE)
+  input_data <- FindClusters(object = input_data, resolution = choose.resolution)
+  input_data <- RunUMAP(input_data, dims = 1:dimensionality)
+  DefaultAssay(input_data) <- 'RNA'
+  #Plot
+  print(DimPlot(input_data, reduction = "umap", label = TRUE))
+  input_data.markers <- FindAllMarkers(input_data, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE) # Verify the treshord 
   return(input_data)
 }
 ```
@@ -99,6 +120,7 @@ y.rna[["percent.mt"]] <- PercentageFeatureSet(y.rna, pattern = "^mt-")
 ```
 
 # 2. Merging two dataset 
+You can merge two of your datasets. Take the time to change the name of the datasets for a better readability of your results 
 
 ```{r}
 ctl_d.combined <- merge(x = x.rna, y = y.rna, add.cell.ids = c("CTL", "D"), project = "Ctl_D_Analysis")
@@ -108,11 +130,31 @@ table(ctl_d.combined$orig.ident)
 ctl_d.list <- SplitObject(object = ctl_d.combined, split.by = "orig.ident")
 ```
 
-# 2. scRNA-Seq
-## 2.1. Trimming 
+# 2. snRNA-Seq
+# Quick Analysis 
+This part of the code allows a quick analysis of a snRNA-seq data set loaded in step 1. 
 
-/!\ TODO : Remove the doublet with DoubletFinder
+The parameters for trimming are: 
+  - 200 > Feature counts > 2,500
+  - Mitochondrial counts < 0.8% 
+The normalization is done via LogNormalise. 
 
+```{r}
+ko.rna <- first_automatisation(y.rna)
+ctl.rna <- first_automatisation(x.rna)
+```
+
+In the light of the Elbow Plot of the previous part, in this part you have to choose the dimensionality as well as the resolution for the data you are analyzing.
+If you need information about the resolution to use, you can use the `second_automatisation_clustree` function which will allow you to obtain the clusturisation trees using the `clustree` library.   
+
+```{r}
+ko.rna <- second_automatisation_simple(ko.rna, 15, 0.9)
+ctl.rna <- second_automatisation_simple(ctl.rna, 12, 0.9)
+```
+
+All theses steps are for a merged dataset.
+
+# 2.1. Trimming 
 The filters applied are : 
   - 200 > Feature counts > 2,500
   - Mitochondrial counts < 0.8% 
@@ -211,15 +253,26 @@ We first construct a KNN graph based on the euclidean distance in PCA space, and
 
 The `FindClusters()` function implements this procedure, and contains a resolution parameter that sets the ‘granularity’ of the downstream clustering, with increased values leading to a greater number of clusters. The authors of XXX package find that setting this parameter between 0.4-1.2 typically returns good results for single-cell datasets of around 3K cells. Optimal resolution often increases for larger datasets. 
 
+
 ```{r}
-#Input the dimesionality of the dataset find at the 2.4 section 
-ctl_d.integrated.data_set.dim = 14
+# for clustree 
+# Input the dimesionality of the dataset find at the 2.4 section 
+ctl_d.integrated.data_set.dim = 15
 
 ctl_d.integrated <- FindNeighbors(ctl_d.integrated, reduction = "pca", dims = 1:ctl_d.integrated.data_set.dim, verbose = FALSE)
 # Select a range of resolution for Clustree 
 resolution.range <- seq(from = 0, to = 1, by = 0.2)
 ctl_d.integrated <- FindClusters(object = ctl_d.integrated, resolution = resolution.range)
 # ctl_d.integrated <- FindClusters(ctl_d.integrated, resolution = 0.4, verbose = FALSE)
+```
+
+```{r}
+# for an particular resolution 
+# Input the dimesionality of the dataset find at the 2.4 section 
+ctl_d.integrated.data_set.dim = 15
+
+ctl_d.integrated <- FindNeighbors(ctl_d.integrated, reduction = "pca", dims = 1:ctl_d.integrated.data_set.dim, verbose = FALSE)
+ctl_d.integrated <- FindClusters(ctl_d.integrated, resolution = 0.4, verbose = FALSE)
 ```
 
 # Facultative Step : Create a subset 
@@ -243,7 +296,7 @@ _Wip in Progress_
 ```{r}
 # 
 ctl_d.integrated <- RunUMAP(ctl_d.integrated, dims = 1:ctl_d.integrated.data_set.dim, verbose = FALSE)  # ,umap.method = 'umap-learn', metric = "correlation"
-# DefaultAssay(ctl_d.integrated) <- 'RNA' #### HeatMAP ?? 
+# DefaultAssay(ctl_d.integrated) <- 'RNA' # This line is problematic for the creation of the HeatMAP 
 #Plot
 DimPlot(ctl_d.integrated, reduction = "umap")
 DimPlot(object = ctl_d.integrated, reduction = "umap", group.by = "orig.ident", label = FALSE)
@@ -251,7 +304,7 @@ DimPlot(ctl_d.integrated, reduction = "umap", split.by = "orig.ident", label = T
 ```
 
 # 2.8 Finding differentialy expressed features
-We are trying to find markers that define clusters via differential expression. You can find markers for a single cluster with the function 'FindMarkers' or for all clusters with `FindAllMarkers`
+We are trying to find markers that define clusters via differential expression. You can find markers for a single cluster with the function `FindMarkers` or for all clusters with `FindAllMarkers`
 
 ```{r}
 #Find markers 
@@ -274,16 +327,78 @@ ctl_d.integrated.markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC)
 DoHeatmap(ctl_d.integrated, features = top5$gene) + NoLegend() 
 ```
 
-# 2.9 Clustree
+# Facultative Step: Assign cell type to each cluster 
 _Wip in Progress_ 
+
+```{r}
+# UMAP 
+# Integrated
+# DimPlot(ctl_d.integrated, reduction = "umap", label = TRUE)
+# Ctl
+DimPlot(ctl.rna, reduction = "umap", label = TRUE)
+# KO
+DimPlot(ko.rna, reduction = "umap", label = TRUE)
+```
+
+```{r}
+# HEATMAP
+# Integrated 
+# Find markers 
+ctl_d.integrated.markers <- FindAllMarkers(ctl_d.integrated, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
+ctl_d.integrated.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
+ctl_d.integrated.markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top3
+DoHeatmap(ctl_d.integrated, features = top3$gene) + NoLegend() 
+# Ctl
+ctl.rna.markers <- FindAllMarkers(ctl.rna, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
+ctl.rna.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
+ctl.rna.markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top3
+DoHeatmap(ctl.rna, features = top3$gene) + NoLegend() 
+# KO
+ko.rna.markers <- FindAllMarkers(ko.rna, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
+ko.rna.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
+ko.rna.markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> top3
+DoHeatmap(ko.rna, features = top3$gene) + NoLegend() 
+
+# 0:TypeIIa(Pkrg3) 1:TypeIIa(Cd36) 2:TypeIIb(Xist) 3:TypeIIa(Abgl1) 4:TypeIIa(Cd36) 5:TypeIIb(Gm26917) 6:TypeIIb(Amd1) 7:TypeIIa(Ppara) 8:Abca8a, Plxdc2, Ebf1 9:MTJ 10:FAPs(Cacna1c, Dlc1, Ebf1) 11:NMJ(Etv5)
+```
+
+```{r}
+#FEATURE PLOT 
+# Integrated 
+FeaturePlot(ctl_d.integrated, features = c("Myh7", "Myh2", "Myh1", "Myh4", "Pdgfra", "Pax7", "Mrc1", "Pecam1"))
+# Ctl
+FeaturePlot(ctl.rna, features = c("Myh11", "Myh2", "Myh1", "Myh4", "Pdgfra", "Pax7", "Mrc1", "Pecam1"))
+# KO 
+FeaturePlot(ko.rna, features = c("Myh7", "Myh2", "Myh1", "Myh4", "Pdgfra", "Pax7", "Mrc1", "Pecam1"))
+```
+
+
+```{r}
+# Clustering 
+# CTL
+# ctl.rna.cluster <- c("TypeIIa (Cd36)", "TypeIIa (Ppara)", "TypeIIb (Amd1)", "TypeIIb (Gm26917)", "TypeIIb (Myhas)", "Faps (Dlc1)", "MTJ", "NMJ")
+ctl.rna.cluster <- c("TypeIIa(Pkrg3)", "TypeIIa(Cd36)", "TypeIIb(Xist)", "TypeIIa(Abgl1)", "TypeIIa(Cd36)", "TypeIIb(Gm26917)", "TypeIIb(Amd1)", "TypeIIa(Ppara)", "Abca8a, Plxdc2, Ebf1", "MTJ", "FAPs(Cacna1c, Dlc1, Ebf1)", "NMJ(Etv5)")
+names(ctl.rna.cluster) <- levels(ctl.rna)
+ctl.rna <- RenameIdents(ctl.rna, ctl.rna.cluster)
+DimPlot(ctl.rna, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+# KO 
+# ko.rna.cluster <- c("? (Dlc1)", "TypeIIb (Gm26917)", "TypeIIa (Cd36)", "TypeIIa (Ppara)", "D", "MTJ", "NMJ")
+# names(ko.rna.cluster) <- levels(ko.rna)
+# ko.rna <- RenameIdents(ko.rna, ko.rna.cluster)
+# DimPlot(ko.rna, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend())
+```
+
+
+# 2.9 Clustree
+Allows you to see how the number of clusters increases with the resolution. 
 
 ```{r}
 head(ctl_d.integrated@meta.data)
 clustree(ctl_d.integrated, prefix = 'integrated_snn_res.')
 ```
 
-# 3. ATAC-Seq 
-_Wip in Progress_ 
+# 3. Multi-Omics: SnRNA-Seq & ATAC-Seq 
+This part of the code allows a WNN analysis of a 10X Multiome RNA+ATAC dataset.
 
 # 3.1 Load data 
 
@@ -300,31 +415,61 @@ x.multi[["percent.mt"]] <- PercentageFeatureSet(x.multi, pattern = "^mt-")
 grange.counts <- StringToGRanges(rownames(x.atac), sep = c(":", "-"))
 grange.use <- seqnames(grange.counts) %in% standardChromosomes(grange.counts)
 x.atac <- x.atac[as.vector(grange.use), ]
-annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79) # Install "EnsDb.Mmusculus.v79"
 seqlevelsStyle(annotations) <- 'UCSC'
 genome(annotations) <- "mm10"
-
-frag.file <- "../data/pbmc_granulocyte_sorted_10k_atac_fragments.tsv.gz"
-chrom_assay <- CreateChromatinAssay(
-   counts = atac_counts,
-   sep = c(":", "-"),
-   genome = 'hg38',
-   fragments = frag.file,
-   min.cells = 10,
-   annotation = annotations
- )
-pbmc[["ATAC"]] <- chrom_assay
+frag.file <- here("data","Ctl-D", "for_SIGNAC", "atac_fragments.tsv.gz")
+chrom_assay <- CreateChromatinAssay(counts = atac_counts, sep = c(":", "-"), genome = 'mm10', fragments = frag.file, min.cells = 10, annotation = annotations)
+x.multi[["ATAC"]] <- chrom_assay
 ```
 
-
-# Facultative Step: Assign cell type to each cluster 
-_Wip in Progress_ 
+# 3.2 Quality Control 
 
 ```{r}
-x.rna.cluster <- c("0", "FastIIa", "MN Myh4", "FastIIb", "FastIIb", "Fibro3", "FastIIa", "MN Myh4", "MT", "unknown", "unknown", "MN Myh4", "MuSC")
-names(x.rna.cluster) <- levels(x.rna)
-x.rna <- RenameIdents(x.rna, x.rna.cluster)
-DimPlot(x.rna, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+x.multi <- subset(
+  x = x.multi,
+  subset = nCount_ATAC < 7e4 &
+    nCount_ATAC > 5e3 &
+    nCount_RNA < 25000 &
+    nCount_RNA > 1000 &
+    percent.mt < 20)
+```
+
+# 3.3 Normalisation 
+
+```{r}
+# SCTransform 
+DefaultAssay(x.multi) <- "RNA"
+x.multi <- SCTransform(x.multi, verbose = FALSE)
+```
+
+# 3.4 ATAC-Seq 
+In a ATAC-Seq analysis with exclude the first dimension. Indeed, it is typically correlated with sequencing depth. 
+
+```{r}
+# We exclude the first dimension as this is typically correlated with sequencing depth
+x.multi <- RunTFIDF(x.multi)
+x.multi <- FindTopFeatures(x.multi, min.cutoff = 'q0')
+x.multi <- RunSVD(x.multi)
+x.multi <- RunUMAP(x.multi, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+```
+
+# 3.5 WNN Graph 
+A WNN graph represent a weighted combination of RNA and ATAC-seq modalites.
+
+```{r}
+x.multi <- FindMultiModalNeighbors(x.multi, reduction.list = list("pca", "lsi"), dims.list = list(1:50, 2:50))
+x.multi <- RunUMAP(x.multi, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+x.multi <- FindClusters(x.multi, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+```
+
+# Visualisation 
+
+```{r}
+umap.snrna <- DimPlot(pbmc, reduction = "umap.rna", group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA")
+umap.atac <- DimPlot(pbmc, reduction = "umap.atac", group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("ATAC")
+umap.wnn <- DimPlot(pbmc, reduction = "wnn.umap", group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
+umap.snrna + umap.atac + umap.wnn & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
 ```
 
 # Appendices 1: Export the data for more analysis 

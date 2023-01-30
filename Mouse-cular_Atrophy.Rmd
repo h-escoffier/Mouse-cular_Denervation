@@ -9,6 +9,7 @@ output:
 
 TODO: Find a way to directly attribute cluster to a type of cell based on literature data. (`Python` ?) 
       Parallelization : https://satijalab.org/seurat/articles/future_vignette.html
+      R Version 4.1.0 
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -447,6 +448,7 @@ y.multi[["ATAC"]] <- chrom_assay
 # Merging two dataset 
 
 _Work in Progress_ 
+Do a for loop for merge dataset and a quick analysis for a single data set
 
 ```{r}
 ctl_d.combined <- merge(x = x.multi, y = y.multi, add.cell.ids = c("CTL", "D"), project = "Ctl_D_Analysis")
@@ -468,7 +470,7 @@ x.multi <- subset(
     percent.mt < 20)
 ```
 
-# 3.3 Normalisation 
+# 4.3 Normalisation 
 
 ```{r}
 # SCTransform 
@@ -476,12 +478,14 @@ DefaultAssay(x.multi) <- "RNA"
 x.multi <- SCTransform(x.multi, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
 ```
 
+The integration is not working yet
+
 ```{r}
 ctl_d.combined.anchors <- FindIntegrationAnchors(object.list = ctl_d.list, normalization.method = 'SCT', anchor.features = features)
 ctl_d.integrated <- IntegrateData(anchorset = ctl_d.combined.anchors, normalization.method = 'SCT')
 ```
 
-# 3.4 ATAC-Seq 
+# 4.4 ATAC-Seq 
 In a ATAC-Seq analysis with exclude the first dimension. Indeed, it is typically correlated with sequencing depth. 
 
 ```{r}
@@ -492,7 +496,7 @@ x.multi <- RunSVD(x.multi)
 x.multi <- RunUMAP(x.multi, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
 ```
 
-# 3.5 WNN Graph 
+# 4.5 WNN Graph 
 A WNN graph represent a weighted combination of RNA and ATAC-seq modalites.
 
 ```{r}
@@ -501,7 +505,7 @@ x.multi <- RunUMAP(x.multi, nn.name = "weighted.nn", reduction.name = "wnn.umap"
 x.multi <- FindClusters(x.multi, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
 ```
 
-# Visualisation 
+# 4.6 Visualisation 
 
 ```{r}
 umap.snrna <- DimPlot(x.multi, reduction = "umap.rna", label = TRUE) + ggtitle("RNA")

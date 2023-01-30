@@ -24,7 +24,7 @@ library(here)
 library(MASS)
 library(future)
 # Genome 
-# library(EnsDb.Mmusculus.v79) # Issue Related to R version  
+library(EnsDb.Mmusculus.v79) # Issue Related to R version  
 # install.packages('BiocManager') 
 # BiocManager::install('limma')
 ```
@@ -130,7 +130,7 @@ table(ctl_d.combined$orig.ident)
 ctl_d.list <- SplitObject(object = ctl_d.combined, split.by = "orig.ident")
 ```
 
-# 2. snRNA-Seq
+# 3. snRNA-Seq
 # Quick Analysis 
 This part of the code allows a quick analysis of a snRNA-seq data set loaded in step 1. 
 
@@ -154,7 +154,7 @@ ctl.rna <- second_automatisation_simple(ctl.rna, 12, 0.9)
 
 All theses steps are for a merged dataset.
 
-# 2.1. Trimming 
+# 3.1. Trimming 
 The filters applied are : 
   - 200 > Feature counts > 2,500
   - Mitochondrial counts < 0.8% 
@@ -170,7 +170,7 @@ for (i in 1:length(x = ctl_d.list)) {
   }
 ```
 
-# 2.2 Normalisation
+# 3.2 Normalisation
 Data normalization can be achieved in several ways: 
 - NormalizeData: 
   - LogNormalize: Feature counts for each cell are divided by the total counts for that cell and multiplied by the scale.factor.
@@ -197,7 +197,7 @@ features <- SelectIntegrationFeatures(object.list = ctl_d.list, nfeatures = 5000
 ctl_d.list <- PrepSCTIntegration(object.list = ctl_d.list, anchor.features = features)
 ```
 
-# 2.3 Integration 
+# 3.3 Integration 
 _Work in Progress_
 
 ```{r}
@@ -213,7 +213,7 @@ ctl_d.combined.anchors <- FindIntegrationAnchors(object.list = ctl_d.list, norma
 ctl_d.integrated <- IntegrateData(anchorset = ctl_d.combined.anchors, normalization.method = 'SCT')
 ```
 
-# 2.4 Scaling 
+# 3.4 Scaling 
 We apply a linear transformation also call ‘scaling’. It is a pre-processing step to dimensional reduction techniques as PCA.
 
 ```{r}
@@ -229,7 +229,7 @@ print(ctl_d.integrated[["pca"]], dims = 1:5, nfeatures = 5)
 DimPlot(ctl_d.integrated, reduction = "pca")
 ```
 
-# 2.5 Dimensionality 
+# 3.5 Dimensionality 
 The JackStraw procedure help to overcome the technical noise present in scRNA-seq data and identify the number of principal components to include in the analysis. This approach can lead to a robust compression of the dataset and improve the accuracy of the analysis.
 
 Another alternative is to realise an Elbow plot. 
@@ -246,7 +246,7 @@ ElbowPlot(ctl_d.integrated, ndims = 50)
 
 Interpretation of the result : 
 
-# 2.6 Cluster the cells 
+# 3.6 Cluster the cells 
 We applies a graph-based clustering approach, building upon initial strategies in Macosko et al. Importantly, the distance metric which drives the clustering analysis (based on previously identified PCs) remains the same. 
 
 We first construct a KNN graph based on the euclidean distance in PCA space, and refine the edge weights between any two cells based on the shared overlap in their local neighborhoods (Jaccard similarity). This step is performed using the `FindNeighbors()` function, and takes as input the defined dimensionality of the dataset. (cf. 2.4)
@@ -290,7 +290,7 @@ genes <- FindMarkers(x.rna, ident.1 = 'Myh1', ident.2 = 'Myh2' )
 print(genes)
 ```
 
-# 2.7 Non-linear Dimensional Reduction 
+# 3.7 Non-linear Dimensional Reduction 
 _Wip in Progress_ 
 
 ```{r}
@@ -303,7 +303,7 @@ DimPlot(object = ctl_d.integrated, reduction = "umap", group.by = "orig.ident", 
 DimPlot(ctl_d.integrated, reduction = "umap", split.by = "orig.ident", label = TRUE)
 ```
 
-# 2.8 Finding differentialy expressed features
+# 3.8 Finding differentialy expressed features
 We are trying to find markers that define clusters via differential expression. You can find markers for a single cluster with the function `FindMarkers` or for all clusters with `FindAllMarkers`
 
 ```{r}
@@ -389,7 +389,7 @@ DimPlot(ctl.rna, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
 ```
 
 
-# 2.9 Clustree
+# 3.9 Clustree
 Allows you to see how the number of clusters increases with the resolution. 
 
 ```{r}
@@ -397,33 +397,66 @@ head(ctl_d.integrated@meta.data)
 clustree(ctl_d.integrated, prefix = 'integrated_snn_res.')
 ```
 
-# 3. Multi-Omics: SnRNA-Seq & ATAC-Seq 
+## 3. Multi-Omics: SnRNA-Seq & ATAC-Seq 
 This part of the code allows a WNN analysis of a 10X Multiome RNA+ATAC dataset.
 
-# 3.1 Load data 
+# 4. Muliomics Analysis: snRNA-Seq & ATAC-Seq 
+# 4.1 Load data 
 
 ```{r}
+# TODO: Do a for loop for load each dataset set instead of the duplication of the code 
 # Load file  
-inputdata.10x <- Read10X_h5(data.dir = here("data","Ctl-D", "for_SIGNAC", "filtered_feature_bc_matrix.h5")) 
+x.inputdata.10x <- Read10X_h5(here("data","Ctl-D", "for_SIGNAC", "filtered_feature_bc_matrix.h5")) 
+y.inputdata.10x <- Read10X_h5(here("data","D", "for_SIGNAC", "filtered_feature_bc_matrix.h5")) 
 # Extract RNA and ATAC data
-x.rna <- inputdata.10x$`Gene Expression`
-x.atac <- inputdata.10x$Peaks
+x.rna <- x.inputdata.10x$`Gene Expression`
+x.atac <- x.inputdata.10x$Peaks
+y.rna <- y.inputdata.10x$`Gene Expression`
+y.atac <- y.inputdata.10x$Peaks
 # Create Seurat object with only snRNA data 
 x.multi <- CreateSeuratObject(counts = x.rna)
 x.multi[["percent.mt"]] <- PercentageFeatureSet(x.multi, pattern = "^mt-")
+y.multi <- CreateSeuratObject(counts = y.rna)
+y.multi[["percent.mt"]] <- PercentageFeatureSet(y.multi, pattern = "^mt-")
 # Adding ATAC-seq data
+# set x 
 grange.counts <- StringToGRanges(rownames(x.atac), sep = c(":", "-"))
 grange.use <- seqnames(grange.counts) %in% standardChromosomes(grange.counts)
 x.atac <- x.atac[as.vector(grange.use), ]
-annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79) # Install "EnsDb.Mmusculus.v79"
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79) 
 seqlevelsStyle(annotations) <- 'UCSC'
-genome(annotations) <- "mm10"
-frag.file <- here("data","Ctl-D", "for_SIGNAC", "atac_fragments.tsv.gz")
-chrom_assay <- CreateChromatinAssay(counts = atac_counts, sep = c(":", "-"), genome = 'mm10', fragments = frag.file, min.cells = 10, annotation = annotations)
+genome(annotations) <- "mm10" 
+frag.file <- here("data","Ctl-D", "for_SIGNAC", "atac_fragments.tsv.gz") # Don't forget to change this part, if there is an issue with this part try the following bash script : 
+                                                                                  # "gzip -d atac_fragments.tsv.gz"
+                                                                                  # "bgzip atac_fragments.tsv"
+                                                                                  # "tabix -p bed atac_fragments.tsv.gz"   
+chrom_assay <- CreateChromatinAssay(counts = x.atac, sep = c(":", "-"), genome = 'mm10', fragments = frag.file, min.cells = 10, annotation = annotations)
 x.multi[["ATAC"]] <- chrom_assay
+# set y 
+grange.counts <- StringToGRanges(rownames(y.atac), sep = c(":", "-"))
+grange.use <- seqnames(grange.counts) %in% standardChromosomes(grange.counts)
+y.atac <- y.atac[as.vector(grange.use), ]
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79) 
+seqlevelsStyle(annotations) <- 'UCSC'
+genome(annotations) <- "mm10" 
+frag.file <- here("data","D", "for_SIGNAC", "atac_fragments.tsv.gz") # Don't forget to change this part
+chrom_assay <- CreateChromatinAssay(counts = y.atac, sep = c(":", "-"), genome = 'mm10', fragments = frag.file, min.cells = 10, annotation = annotations)
+y.multi[["ATAC"]] <- chrom_assay
 ```
 
-# 3.2 Quality Control 
+# Merging two dataset 
+
+_Work in Progress_ 
+
+```{r}
+ctl_d.combined <- merge(x = x.multi, y = y.multi, add.cell.ids = c("CTL", "D"), project = "Ctl_D_Analysis")
+# Plot the number of nuclei
+table(ctl_d.combined$orig.ident)
+# Split the data into a list 
+ctl_d.list <- SplitObject(object = ctl_d.combined, split.by = "orig.ident")
+```
+
+# 4.2 Quality Control 
 
 ```{r}
 x.multi <- subset(
@@ -440,7 +473,12 @@ x.multi <- subset(
 ```{r}
 # SCTransform 
 DefaultAssay(x.multi) <- "RNA"
-x.multi <- SCTransform(x.multi, verbose = FALSE)
+x.multi <- SCTransform(x.multi, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
+```
+
+```{r}
+ctl_d.combined.anchors <- FindIntegrationAnchors(object.list = ctl_d.list, normalization.method = 'SCT', anchor.features = features)
+ctl_d.integrated <- IntegrateData(anchorset = ctl_d.combined.anchors, normalization.method = 'SCT')
 ```
 
 # 3.4 ATAC-Seq 
@@ -466,10 +504,12 @@ x.multi <- FindClusters(x.multi, graph.name = "wsnn", algorithm = 3, verbose = F
 # Visualisation 
 
 ```{r}
-umap.snrna <- DimPlot(pbmc, reduction = "umap.rna", group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA")
-umap.atac <- DimPlot(pbmc, reduction = "umap.atac", group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("ATAC")
-umap.wnn <- DimPlot(pbmc, reduction = "wnn.umap", group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
-umap.snrna + umap.atac + umap.wnn & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
+umap.snrna <- DimPlot(x.multi, reduction = "umap.rna", label = TRUE) + ggtitle("RNA")
+umap.atac <- DimPlot(x.multi, reduction = "umap.atac", label = TRUE) + ggtitle("ATAC")
+umap.wnn <- DimPlot(x.multi, reduction = "wnn.umap", label = TRUE) + ggtitle("WNN")
+umap.snrna
+umap.atac
+umap.wnn
 ```
 
 # Appendices 1: Export the data for more analysis 

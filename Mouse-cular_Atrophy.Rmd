@@ -14,8 +14,6 @@ TODO: Find a way to directly attribute cluster to a type of cell based on litera
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 # Install libraries 
-install.packages('remotes')
-remotes::install_version("Seurat", version = "3.2.3")
 library(Seurat)
 library(Signac) 
 library(clustree)
@@ -27,12 +25,7 @@ library(here)
 library(MASS)
 library(future)
 # Genome 
-if (!require("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install("EnsDb.Mmusculus.v79")
 library(EnsDb.Mmusculus.v79) # Issue Related to R version  
-# install.packages('BiocManager') 
-# BiocManager::install('limma')
 ```
 
 # Functions
@@ -98,14 +91,15 @@ second_automatisation_simple <- function(input_data, dimensionality, choose.reso
   DefaultAssay(input_data) <- 'RNA'
   #Plot
   print(DimPlot(input_data, reduction = "umap", label = TRUE))
-  input_data.markers <- FindAllMarkers(input_data, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE) # Verify the treshord 
+  input_data.markers <- FindAllMarkers(input_data, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE) # Verify the treshold 
   return(input_data)
 }
 
 # WNN Analysis
 wnn_analysis <- function(input_multi.data){
   # Trimming 
-  input_multi.data <- subset(x = input_multi.data, subset = nCount_ATAC < 7e4 & nCount_ATAC > 5e3 & nCount_RNA < 25000 & nCount_RNA > 1000 & percent.mt < 20)
+  input_multi.data <- subset(x = input_multi.data, 
+                             subset = nCount_ATAC < 7e4 & nCount_ATAC > 5e3 & nCount_RNA < 25000 & nCount_RNA > 1000 & percent.mt < 20)
   # Normalization 
   DefaultAssay(input_multi.data) <- "RNA"
   input_multi.data <- SCTransform(input_multi.data, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
@@ -156,11 +150,11 @@ y.rna[["percent.mt"]] <- PercentageFeatureSet(y.rna, pattern = "^mt-")
 You can merge two of your datasets. Take the time to change the name of the datasets for a better readability of your results 
 
 ```{r}
-ctl_d.combined <- merge(x = x.rna, y = y.rna, add.cell.ids = c("CTL", "D"), project = "Ctl_D_Analysis")
+ctl_d.combined.bis <- merge(x = x.rna, y = y.rna, add.cell.ids = c("CTL", "D"), project = "Ctl_D_Analysis")
 # Plot the number of nuclei
-table(ctl_d.combined$orig.ident)
+# table(ctl_d.combined$orig.ident)
 # Split the data into a list 
-ctl_d.list <- SplitObject(object = ctl_d.combined, split.by = "orig.ident")
+# ctl_d.list <- SplitObject(object = ctl_d.combined, split.by = "orig.ident")
 ```
 
 # 3. snRNA-Seq
@@ -459,7 +453,8 @@ x.atac <- x.atac[as.vector(grange.use), ]
 annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79) 
 seqlevelsStyle(annotations) <- 'UCSC'
 genome(annotations) <- "mm10" 
-frag.file <- here("data","Ctl-D", "for_SIGNAC", "atac_fragments.tsv.gz") # Don't forget to change this part, if there is an issue with this part try the following bash script : gzip -d atac_fragments.tsv.gz | bgzip | tabix -p bed
+# Don't forget to change this part, if there is an issue with this part try the following bash script : gzip -d atac_fragments.tsv.gz | bgzip | tabix -p bed
+frag.file <- here("data","Ctl-D", "for_SIGNAC", "atac_fragments.tsv.gz")
 chrom_assay <- CreateChromatinAssay(counts = x.atac, sep = c(":", "-"), genome = 'mm10', fragments = frag.file, min.cells = 10, annotation = annotations)
 x.multi[["ATAC"]] <- chrom_assay
 # set y 
@@ -477,91 +472,20 @@ y.multi[["ATAC"]] <- chrom_assay
 # Quick Analysis 
 
 ```{r}
-wnn_analysis <- function(input_multi.data){
-  # Trimming 
-  input_multi.data <- subset(x = input_multi.data, subset = nCount_ATAC < 7e4 & nCount_ATAC > 5e3 & nCount_RNA < 25000 & nCount_RNA > 1000 & percent.mt < 20)
+x.multi <- wnn_analysis(x.multi)
+```
+
+```{r}
+y.multi <- wnn_analysis(y.multi)
+```
+
+```{r}
+# Trimming 
+  x.multi <- subset(x = x.multi, 
+                             subset = nCount_ATAC < 7e4 & nCount_ATAC > 5e3 & nCount_RNA < 25000 & nCount_RNA > 1000 & percent.mt < 20)
   # Normalization 
-  DefaultAssay(input_multi.data) <- "RNA"
-  input_multi.data <- SCTransform(input_multi.data, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
-  # UMAP 
-  DefaultAssay(input_multi.data) <- "ATAC"
-  input_multi.data <- RunTFIDF(input_multi.data)
-  input_multi.data <- FindTopFeatures(input_multi.data, min.cutoff = 'q0')
-  input_multi.data <- RunSVD(input_multi.data)
-  input_multi.data <- RunUMAP(input_multi.data, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
-  # Find Clusters & Neighbors 
-  input_multi.data <- FindMultiModalNeighbors(input_multi.data, reduction.list = list("pca", "lsi"), dims.list = list(1:50, 2:50))
-  input_multi.data <- RunUMAP(input_multi.data, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
-  input_multi.data <- FindClusters(input_multi.data, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
-  # Visualize 
-  umap.snrna <- DimPlot(input_multi.data, reduction = "umap.rna", label = TRUE) + ggtitle("RNA")
-  umap.atac <- DimPlot(input_multi.data, reduction = "umap.atac", label = TRUE) + ggtitle("ATAC")
-  umap.wnn <- DimPlot(input_multi.data, reduction = "wnn.umap", label = TRUE) + ggtitle("WNN")
-  print(umap.snrna)
-  print(umap.atac)
-  print(umap.wnn)
-  return(input_multi.data)
-}
-```
-
-# Merging two dataset 
-
-_Work in Progress_ 
-Do a for loop for merge dataset and a quick analysis for a single data set
-
-```{r}
-ctl_d.combined <- merge(x = x.multi, y = y.multi, add.cell.ids = c("CTL", "D"), project = "Ctl_D_Analysis")
-# Plot the number of nuclei
-table(ctl_d.combined$orig.ident)
-# Split the data into a list 
-ctl_d.list <- SplitObject(object = ctl_d.combined, split.by = "orig.ident")
-```
-
-# 4.2 Quality Control 
-
-```{r}
-for (i in 1:length(x = ctl_d.list)) {
-  ctl_d.list[[i]] <- subset(
-    x = ctl_d.list[[i]],
-    subset = nCount_ATAC < 7e4 &
-    nCount_ATAC > 5e3 &
-    nCount_RNA < 25000 &
-    nCount_RNA > 1000 &
-    percent.mt < 20)
-}
-```
-
-# 4.3 Normalisation 
-
-```{r}
-# NormalizeData 
-plan("multiprocess", workers = 4)
-for (i in 1:length(x = ctl_d.list)) {
-  ctl_d.list[[i]] <- NormalizeData(ctl_d.list[[i]], normalization.method = "LogNormalize", scale.factor = 10000)
-  # Calculate a subset of features that exhibit high cell-to-cell variation in the dataset 
-  ctl_d.list[[i]] <- FindVariableFeatures(ctl_d.list[[i]], selection.method = "vst", nfeatures = 2000)
-  }
-```
-
-```{r}
-# SCTransform 
-DefaultAssay(x.multi) <- "RNA"
-x.multi <- SCTransform(x.multi, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
-```
-
-# 4.4 Integration  
-
-```{r}
-# Integration with NormaliseData()
-ctl_d.combined.anchors <- FindIntegrationAnchors(object.list = ctl_d.list, dims = 1:30)
-ctl_d.integrated <- IntegrateData(anchorset = ctl_d.combined.anchors, dims = 1:30)
-DefaultAssay(ctl_d.integrated) <- "integrated"
-```
-
-```{r}
-# SCTransform
-ctl_d.combined.anchors <- FindIntegrationAnchors(object.list = ctl_d.list, normalization.method = 'SCT', anchor.features = features)
-ctl_d.integrated <- IntegrateData(anchorset = ctl_d.combined.anchors, normalization.method = 'SCT')
+  DefaultAssay(x.multi) <- "RNA"
+  x.multi <- SCTransform(x.multi, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
 ```
 
 # 4.4 ATAC-Seq 
@@ -569,10 +493,11 @@ In a ATAC-Seq analysis with exclude the first dimension. Indeed, it is typically
 
 ```{r}
 # We exclude the first dimension as this is typically correlated with sequencing depth
-ctl_d.integrated <- RunTFIDF(ctl_d.integrated)
-ctl_d.integrated <- FindTopFeatures(ctl_d.integrated, min.cutoff = 'q0')
-ctl_d.integrated <- RunSVD(ctl_d.integrated)
-ctl_d.integrated <- RunUMAP(ctl_d.integrated, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+DefaultAssay(x.multi) <- "ATAC"
+x.multi <- RunTFIDF(x.multi)
+x.multi <- FindTopFeatures(x.multi, min.cutoff = 'q0')
+x.multi <- RunSVD(x.multi)
+x.multi <- RunUMAP(x.multi, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
 ```
 
 # 4.5 WNN Graph 
@@ -580,20 +505,30 @@ A WNN graph represent a weighted combination of RNA and ATAC-seq modalites.
 
 ```{r}
 plan("multiprocess", workers = 4) # Parallelization on 4 cores 
-ctl_d.integrated <- FindMultiModalNeighbors(ctl_d.integrated, reduction.list = list("pca", "lsi"), dims.list = list(1:50, 2:50))
-ctl_d.integrated <- RunUMAP(ctl_d.integrated, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
-ctl_d.integrated <- FindClusters(ctl_d.integrated, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+x.multi <- FindMultiModalNeighbors(x.multi, reduction.list = list("pca", "lsi"), dims.list = list(1:50, 2:50))
+x.multi <- RunUMAP(x.multi, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+resolution.range <- seq(from = 0, to = 1, by = 0.2)
+x.multi <- FindClusters(x.multi, graph.name = "wsnn", algorithm = 3, verbose = FALSE, resolution = resolution.range)
 ```
 
 # 4.6 Visualisation 
 
 ```{r}
-umap.snrna <- DimPlot(ctl_d.integrated, reduction = "umap.rna", label = TRUE) + ggtitle("RNA")
-umap.atac <- DimPlot(ctl_d.integrated, reduction = "umap.atac", label = TRUE) + ggtitle("ATAC")
-umap.wnn <- DimPlot(ctl_d.integrated, reduction = "wnn.umap", label = TRUE) + ggtitle("WNN")
+umap.snrna <- DimPlot(x.multi, reduction = "umap.rna", label = TRUE) + ggtitle("RNA")
+umap.atac <- DimPlot(x.multi, reduction = "umap.atac", label = TRUE) + ggtitle("ATAC")
+umap.wnn <- DimPlot(x.multi, reduction = "wnn.umap", label = TRUE) + ggtitle("WNN")
 umap.snrna
 umap.atac
 umap.wnn
+# head(x.multi@meta.data)
+clustree(x.multi, prefix = 'wsnn_res.')
+```
+
+# Other 
+
+```{r}
+FeaturePlot(x.multi, features = c("rna_Myh4", "rna_Myh1", "rna_Myh2", "Myh7", "rna_Pax7", "rna_Col22a1"), reduction = 'wnn.umap', max.cutoff = 10, ncol = 3)
+FeaturePlot(x.multi, features = c("rna_Xist", "rna_Etv5", "rna_Gm26917", "rna_Dlc1"), reduction = 'wnn.umap', max.cutoff = 10, ncol = 3)
 ```
 
 # Appendices 1: Export the data for more analysis 

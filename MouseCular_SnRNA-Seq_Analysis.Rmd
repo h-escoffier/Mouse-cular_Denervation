@@ -1,0 +1,339 @@
+---
+title: "SnRNA-Seq_Analysis"
+author: "Hugues Escoffier" 
+output: html_document
+date: "2023-02-14"
+---
+
+An automated analysis for SnRNA-Seq mouse data.
+R Version 4.1.2
+
+# Libraries 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Install libraries
+library(Seurat)
+library(Signac)
+library(clustree)
+# Additional
+library(patchwork)
+library(dplyr)
+library(ggplot2)
+library(here)
+library(MASS)
+library(future)
+library(limma)
+library(glmGamPoi)
+library(cowplot)
+library(magrittr)
+```
+
+# Functions 
+
+```{r}
+# From path to SeuratObject  
+path_to_object <- function(one_path, name, project_name = 'Default', data_type = 'Multi') {
+  x.data <- Read10X(data.dir = one_path)
+  # Initialize the Seurat object with non-normalized data.
+  if (data_type == 'Multi') {
+    x.rna <- x.data$`Gene Expression`
+  }
+  # Create a Seurat Object + Add the mitochondrial information
+  x.rna <- CreateSeuratObject(counts = x.rna, project = name, min.cells = 3, min.features = 200)
+  x.rna[["percent.mt"]] <- PercentageFeatureSet(x.rna, pattern = "^mt-")
+  return(x.rna)
+}
+
+# Normalization, scaling, PCA & Dim
+snrna_seq_step1 <- function(input_data, lim_nFeature_RNA_sup = 200, lim_nFeature_RNA_inf = 2500, th_percent.mt = 0.8, normalisation = 'Log'){
+  print('QC - BEGIN')
+  # Visualization before trimming
+  plot_trimming(input_data)
+  # Trimming
+  input_data <- subset(input_data, subset = nFeature_RNA > lim_nFeature_RNA_sup & nFeature_RNA < lim_nFeature_RNA_inf & percent.mt < th_percent.mt)
+  # Visualization after trimming
+  plot_trimming(input_data)
+  print('QC - END')
+  # Normalization + Scaling with LogNormalize
+  if (normalisation == 'Log') {
+    # Normalization
+    print('LOGN - BEGIN')
+    input_data <- NormalizeData(input_data, normalization.method = "LogNormalize", scale.factor = 10000)
+    # Scaling
+    print('SCALING - BEGIN')
+    all.genes <- rownames(input_data)
+    input_data <- ScaleData(input_data, features = all.genes)
+    print('SCALING - END')
+    # Calculate a subset of features that exhibit high cell-to-cell variation in the data set
+    print('FVF - BEGIN')
+    input_data <- FindVariableFeatures(input_data, selection.method = "vst", nfeatures = 2000)
+    print('FVF - END')
+    }
+  else {
+    # Normalization + Scaling with SCTransform
+    print('SCT - BEGIN')
+    input_data <- SCTransform(input_data, vst.flavor = "v2", vars.to.regress = "percent.mt")
+    print('SCT - END')
+    # Calculate a subset of features that exhibit high cell-to-cell variation in the data set
+    print('FVF - BEGIN')
+    input_data <- FindVariableFeatures(input_data, selection.method = "vst", nfeatures = 2000)
+    print('FVF - END')
+  }
+  # PCA + Plot
+  print('PCA - BEGIN')
+  input_data <- RunPCA(input_data, npcs=50, features = VariableFeatures(object = input_data))
+  print(input_data[["pca"]], dims = 1:5, nfeatures = 5)
+  print(DimPlot(input_data, reduction = "pca"))
+  print('PCA - END')
+  # Elbow Plot
+  print(ElbowPlot(input_data, ndims = 50))
+  return(input_data)
+}
+
+# UMAP 
+snrna_seq_step2 <- function(input_data, dimensionality, choose.resolution) {
+  # Clustering
+  input_data <- FindNeighbors(input_data, reduction = "pca", dims = 1:dimensionality)
+  input_data <- FindClusters(object = input_data, resolution = choose.resolution)
+  input_data <- RunUMAP(input_data, dims = 1:dimensionality)
+  DefaultAssay(input_data) <- 'RNA'
+  #Plot
+  print(DimPlot(input_data, reduction = "umap", label = TRUE))
+  return(input_data)
+}
+
+# Markers & Heat map
+snrna_seq_markers <- function(input_data, hm_gene_nb = 5, is.SCT = FALSE) {
+  if (is.SCT == TRUE) {
+   DefaultAssay(input_data) <- 'SCT' 
+  }
+  input_data.markers <- FindAllMarkers(input_data, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
+  print(input_data.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC))
+  input_data.markers %>% group_by(cluster) %>% top_n(n = hm_gene_nb, wt = avg_log2FC) -> topX
+  print(DoHeatmap(input_data, features = topX$gene) + NoLegend())
+}
+
+snrna_seq_clustree <- function(input_data, is.SCT = FALSE) {
+  resolution.range <- seq(from = 0, to = 1.2, by = 0.2)
+  if (is.SCT == TRUE) {
+    input_data.clustree <- FindClusters(object = input_data, graph.name = "SCT_snn", resolution = resolution.range)
+  }
+  else {
+    input_data.clustree <- FindClusters(object = input_data, resolution = resolution.range)
+  }
+  print(head(input_data@meta.data))
+  if (is.SCT == TRUE) {
+    print(clustree(input_data.clustree, prefix = 'SCT_snn_res.'))
+  }
+  else {
+    print(clustree(input_data.clustree, prefix = 'RNA_snn_res.'))
+  }
+}
+
+# Visualization of the QC 
+plot_trimming <- function(x) {
+  # Plots
+  VnPlot <- VlnPlot(x, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+  RNAcount_MTPer <- FeatureScatter(x, feature1 = "nCount_RNA", feature2 = "percent.mt")
+  RNAcount_RNAFeat <- FeatureScatter(x, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+  # Visualize
+  print(VnPlot)
+  print(RNAcount_MTPer + RNAcount_RNAFeat)
+}
+```
+
+# Analyse 
+
+```{r}
+# path_to_object <- function(one_path, name, project_name = 'Default', data_type = 'Multi')
+ctl_d <- path_to_object('data/Ctl-D/outs/filtered_feature_bc_matrix', 'Control')
+```
+
+```{r}
+# snrna_seq_step1 <- function(input_data, lim_nFeature_RNA_sup = 200, lim_nFeature_RNA_inf = 2500, th_percent.mt = 0.8, normalisation = 'Log')
+ctl_d <- snrna_seq_step1(ctl_d, normalisation = 'SCT')
+```
+
+```{r}
+# snrna_seq_step2 <- function(input_data, dimensionality, choose.resolution)
+ctl_d <- snrna_seq_step2(ctl_d, dimensionality = 16, choose.resolution = 0.6)
+```
+
+```{r}
+ctl_d <- snrna_seq_step2(ctl_d, dimensionality = 11, choose.resolution = 0.4)
+```
+
+```{r}
+# snrna_seq_clustree <- function(input_data, is.SCT = FALSE)
+snrna_seq_clustree(ctl_d, is.SCT = TRUE)
+```
+
+```{r}
+# snrna_seq_markers <- function(input_data, hm_gene_nb = 5, is.SCT = FALSE) 
+snrna_seq_markers(ctl_d, hm_gene_nb = 3, is.SCT = TRUE)
+```
+
+# Subset
+
+```{r}
+list_of_cluster <- c(0,1,2,3,4)
+# Create a subset 
+new_subset <- subset(x = input_data, idents = list_of_cluster, invert = TRUE)
+```
+
+# Feature Plot 
+
+```{r}
+FeaturePlot(ctl_d, features = c("Myh1", "Myh2", "Myh4", "Myh7"), max.cutoff = 4)
+FeaturePlot(ctl_d, features = c( "Xist", "Uty"), max.cutoff = 4)
+```
+
+```{r}
+VlnPlot(ctl_d, features = c("Xist"), slot = "counts", log = TRUE)
+```
+
+```{r}
+new.cluster.ids <- c()
+names(new.cluster.ids) <- levels(ctl_d)
+ctl_d <- RenameIdents(ctl_d, new.cluster.ids)
+DimPlot(ctl_d, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+```
+
+```{r}
+saveRDS(ctl_d, 'control_sct')
+```
+
+## Integration 
+# Load 
+
+```{r}
+ctl_d <- readRDS("output/Ctl-D_Log/wnn_control_log")
+denervated <- readRDS("output/Denervated_Log/wnn_denervated_log")
+```
+
+# Merge
+
+```{r}
+combined_merge <- merge(ctl_d, y = denervated, add.cell.ids = c("Control", "Denervated"), project = "MouseCular", merge.data = TRUE)
+```
+
+# Normalize, FVF
+
+* Log 
+
+```{r}
+# Normalize and Identify Variable Features for each dataset
+combined.list <- SplitObject(combined_merge, split.by = "orig.ident")
+combined.list <- lapply(X = combined.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+    x <- ScaleData(x)
+})
+```
+
+```{r}
+# Select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = combined.list)
+both.anchors <- FindIntegrationAnchors(object.list = combined.list, anchor.features = features)
+# Integration w/ LogNormalize
+integrated <- IntegrateData(anchorset = both.anchors)
+DefaultAssay(integrated) <- "integrated"
+```
+
+* SCTransform
+
+```{r}
+# Normalize + Scale 
+combined.list <- SplitObject(combined_merge, split.by = "orig.ident")
+combined.list <- lapply(X = combined.list, FUN = SCTransform)
+features <- SelectIntegrationFeatures(object.list = combined.list, nfeatures = 3000)
+combined.list <- PrepSCTIntegration(object.list = combined.list, anchor.features = features)
+```
+
+```{r}
+# Integration w/ SCTransform
+both.anchors <- FindIntegrationAnchors(object.list = combined.list, normalization.method = "SCT", anchor.features = features)
+integrated <- IntegrateData(anchorset = both.anchors, normalization.method = "SCT")
+```
+
+```{r}
+# PCA 
+integrated <- ScaleData(integrated)
+integrated <- RunPCA(integrated, npcs = 50)
+ElbowPlot(integrated, ndims = 50)
+```
+
+```{r}
+# UMAP 
+integrated <- RunUMAP(integrated, reduction = "pca", dims = 1:15)
+integrated <- FindNeighbors(integrated, reduction = "pca", dims = 1:15)
+```
+
+```{r}
+# Clustree
+resolution.range <- seq(from = 0, to = 1.2, by = 0.2)
+integrated.clustree <- FindClusters(object = integrated, resolution = resolution.range)
+head(integrated@meta.data)
+clustree(integrated.clustree, prefix = 'integrated_snn_res.')
+```
+
+```{r}
+# Find Cluster 
+integrated <- FindClusters(integrated, resolution = 0.5)
+```
+
+```{r}
+# Visualization
+DimPlot(integrated, reduction = "umap", group.by = "orig.ident")
+DimPlot(integrated, reduction = "umap", label = TRUE, repel = TRUE)
+DimPlot(integrated, reduction = "umap", split.by = "orig.ident")
+```
+
+```{r}
+# HeatMap
+integrated.markers <- FindAllMarkers(integrated, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
+integrated.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
+integrated.markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> topX
+DoHeatmap(integrated, features = topX$gene) + NoLegend()
+```
+
+```{r}
+FeaturePlot(integrated, features = c("Myh1", "Myh2", "Myh4", "Myh7"), min.cutoff = 2, max.cutoff = 4)
+FeaturePlot(integrated, features = c( "Xist", "Uty"), min.cutoff = 1, max.cutoff = 4)
+```
+
+# Conserved Cell Type Markers 
+
+```{r}
+DefaultAssay(integrated) <- "RNA"
+conserved.markers <- FindConservedMarkers(integrated, ident.1 = 6, grouping.var = "orig.ident")
+head(conserved.markers)
+```
+
+```{r}
+markers.to.plot <- c("Myh1", "Myh2", "Myh4", "Myh7", "Xist", "Uty", "Col22a1")
+DotPlot(integrated, features = markers.to.plot, cols = c("blue", "red"), dot.scale = 5, split.by = "orig.ident") + RotatedAxis()
+```
+
+# Differential Expressed Genes
+
+```{r}
+theme_set(theme_cowplot())
+x.cells <- subset(integrated, idents = "6")
+Idents(x.cells) <- "orig.ident"
+avg.x.cells <- as.data.frame(log1p(AverageExpression(x.cells)$RNA))
+avg.x.cells$gene <- rownames(avg.x.cells)
+
+genes.to.label = c("Myh4", "Myh1", "Myh2", "Xist", "Uty")
+
+p1 <- ggplot(avg.x.cells, aes(Control, Denervated)) + geom_point() + ggtitle("Cluster 6")
+p1 <- LabelPoints(plot = p1, points = genes.to.label, repel = TRUE)
+
+p1
+```
+```{r}
+FeaturePlot(integrated, features = c("Myh4"), split.by = "orig.ident", max.cutoff = 3,
+    cols = c("grey", "red"))
+```
+

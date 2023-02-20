@@ -14,6 +14,7 @@ R Version 4.1.2
 knitr::opts_chunk$set(echo = TRUE)
 # Install libraries
 library(Seurat)
+library(SeuratDisk)
 library(Signac)
 library(clustree)
 # Additional
@@ -152,12 +153,12 @@ ctl_d <- path_to_object('data/Ctl-D/outs/filtered_feature_bc_matrix', 'Control')
 
 ```{r}
 # snrna_seq_step1 <- function(input_data, lim_nFeature_RNA_sup = 200, lim_nFeature_RNA_inf = 2500, th_percent.mt = 0.8, normalisation = 'Log')
-ctl_d <- snrna_seq_step1(ctl_d, normalisation = 'SCT')
+ctl_d <- snrna_seq_step1(ctl_d)
 ```
 
 ```{r}
 # snrna_seq_step2 <- function(input_data, dimensionality, choose.resolution)
-ctl_d <- snrna_seq_step2(ctl_d, dimensionality = 16, choose.resolution = 0.6)
+ctl_d <- snrna_seq_step2(ctl_d, dimensionality = 10, choose.resolution = 0.6)
 ```
 
 ```{r}
@@ -171,15 +172,15 @@ snrna_seq_clustree(ctl_d, is.SCT = TRUE)
 
 ```{r}
 # snrna_seq_markers <- function(input_data, hm_gene_nb = 5, is.SCT = FALSE) 
-snrna_seq_markers(ctl_d, hm_gene_nb = 3, is.SCT = TRUE)
+snrna_seq_markers(ctl_d, hm_gene_nb = 3)
 ```
 
 # Subset
 
 ```{r}
-list_of_cluster <- c(0,1,2,3,4)
+list_of_cluster <- c("","","","","")
 # Create a subset 
-new_subset <- subset(x = input_data, idents = list_of_cluster, invert = TRUE)
+new_subset <- subset(x = input_data, idents = list_of_cluster, invert = FALSE)
 ```
 
 # Feature Plot 
@@ -201,15 +202,15 @@ DimPlot(ctl_d, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
 ```
 
 ```{r}
-saveRDS(ctl_d, 'control_sct')
+saveRDS(ctl_d, 'ctl_log')
 ```
 
 ## Integration 
 # Load 
 
 ```{r}
-ctl_d <- readRDS("output/Ctl-D_Log/wnn_control_log")
-denervated <- readRDS("output/Denervated_Log/wnn_denervated_log")
+ctl_d <- readRDS("output/Ctl-D_Log/ctl_d_log")
+denervated <- readRDS("output/Denervated_Log/denervated_log")
 ```
 
 # Merge
@@ -266,8 +267,8 @@ ElbowPlot(integrated, ndims = 50)
 
 ```{r}
 # UMAP 
-integrated <- RunUMAP(integrated, reduction = "pca", dims = 1:15)
-integrated <- FindNeighbors(integrated, reduction = "pca", dims = 1:15)
+integrated <- RunUMAP(integrated, reduction = "pca", dims = 1:13)
+integrated <- FindNeighbors(integrated, reduction = "pca", dims = 1:13)
 ```
 
 ```{r}
@@ -285,22 +286,40 @@ integrated <- FindClusters(integrated, resolution = 0.5)
 
 ```{r}
 # Visualization
-DimPlot(integrated, reduction = "umap", group.by = "orig.ident")
-DimPlot(integrated, reduction = "umap", label = TRUE, repel = TRUE)
-DimPlot(integrated, reduction = "umap", split.by = "orig.ident")
+DimPlot(integrated_only_myon, reduction = "umap", group.by = "orig.ident")
+DimPlot(integrated_only_myon, reduction = "umap", label = TRUE, repel = TRUE)
+DimPlot(integrated_only_myon, reduction = "umap", split.by = "orig.ident")
 ```
 
 ```{r}
 # HeatMap
 integrated.markers <- FindAllMarkers(integrated, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
-integrated.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
+integrated.markers %>% group_by(cluster) %>% slice_max(n = 10, order_by = avg_log2FC)
 integrated.markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> topX
+# write.csv(topX, "integrated_top10_genes_per_cluster.csv", row.names=FALSE)
 DoHeatmap(integrated, features = topX$gene) + NoLegend()
 ```
 
 ```{r}
 FeaturePlot(integrated, features = c("Myh1", "Myh2", "Myh4", "Myh7"), min.cutoff = 2, max.cutoff = 4)
 FeaturePlot(integrated, features = c( "Xist", "Uty"), min.cutoff = 1, max.cutoff = 4)
+```
+
+```{r}
+rename.clusters <- c("TypeIIx", "TypeIIx", "TypeIIb(Uty)", "Denervated_TypeIIb", "Denervated_TypeIIb", "TypeIIb(Uty)", "TypeIIb(Xist)", "Denervated_TypeIIx", "FAPs", "MTJ", "Unknown", "NMJ")
+names(rename.clusters) <- levels(integrated)
+integrated <- RenameIdents(integrated, rename.clusters)
+```
+
+```{r}
+list_of_cluster <- c("TypeIIx","TypeIIx","TypeIIb(Uty)","Denervated_TypeIIb","TypeIIb(Xist)", "Denervated_TypeIIx")
+# Create a subset 
+integrated_only_myon <- subset(x = integrated, idents = list_of_cluster, invert = FALSE)
+```
+
+```{r}
+SaveH5Seurat(ctl_d, filename = "ctl_d.h5Seurat")
+Convert("ctl_d.h5Seurat", dest = "h5ad")
 ```
 
 # Conserved Cell Type Markers 

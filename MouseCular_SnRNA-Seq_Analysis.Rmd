@@ -12,27 +12,41 @@ Based on Zhisong He & Barbara Treutlein Analysis (https://github.com/quadbiolab)
 ## 0. Libraries 
 
 ```{r}
-# library(destiny)
 # CRAN 
 library(Seurat)
+library(SeuratDisk)
+library(circlize)
 library(harmony)
 library(dplyr)
+library(tidyr)
+library(tidyverse)
 library(patchwork)
 library(stats)
 library(ggplot2)
 library(ggrepel)
+library(tibble)
+library(monocle3)
+library(SeuratWrappers)
+library(clustree)
+library(anndata)
+library(reticulate)
+library(renv)
 # BioConductor 
 library(destiny)
+library(ComplexHeatmap)
 # Devtools 
 library(presto)
+library(nichenetr)
+library(loomR)
 # Genomes
 ```
 
 ## 1. Create Seurat Object 
 
 ```{r}
-counts <- Read10X(data.dir = "data/KO/outs/filtered_feature_bc_matrix")
-seurat.rna <- CreateSeuratObject(counts$`Gene Expression`, project="KO")
+counts <- Read10X(data.dir = "data/WTSO/filtered_feature_bc_matrix")
+# seurat.rna <- CreateSeuratObject(counts$`Gene Expression`, project="D2")
+seurat.rna <- CreateSeuratObject(counts, project="Ctl-Pl")
 ```
 
 ## 2. Quality Control 
@@ -99,11 +113,11 @@ ElbowPlot(seurat.rna, ndims = ncol(Embeddings(seurat.rna, "pca")))
 ```
 
 ## 7. Non-linear dimension reduction 
-
 TSNE provides great visualization when cells form distinct cell groups, while UMAP perserves trajectory-like structure better when data contains 'continuum'.
+
 ```{r}
-seurat.rna <- RunTSNE(seurat.rna, dims = 1:15)
-seurat.rna <- RunUMAP(seurat.rna, dims = 1:15)
+seurat.rna <- RunTSNE(seurat.rna, dims = 1:25)
+seurat.rna <- RunUMAP(seurat.rna, dims = 1:25)
 plot1 <- TSNEPlot(seurat.rna)
 plot2 <- UMAPPlot(seurat.rna)
 plot1
@@ -120,7 +134,7 @@ ncol=3, reduction = "umap")
 ## Save 
 
 ```{r}
-saveRDS(seurat.rna, file="save/seurat_ko")
+saveRDS(seurat.rna, file="save/seurat_ctl_pl")
 ```
 
 ## 8. Integration 
@@ -130,12 +144,16 @@ saveRDS(seurat.rna, file="save/seurat_ko")
 ```{r}
 seurat_ctl <- readRDS("save/seurat_ctl")
 seurat_denerv <- readRDS("save/seurat_denerv")
+seurat_d2 <- readRDS("save/seurat_d2")
+seurat_teno <- readRDS("save/seurat_teno")
+seurat_ctl_pl <- readRDS("save/seurat_ctl_pl")
 ```
 
 ### 8.1 Merge
 
 ```{r}
-seurat.merge <- merge(seurat_ctl, c(seurat_denerv)) %>%
+seurat.merge <- merge(seurat_ctl, c(seurat_denerv, seurat_d2, seurat_ctl_pl)) %>%
+# seurat.merge <- merge(seurat_ctl, c(seurat_denerv)) %>%
   FindVariableFeatures(nfeatures = 3000) %>%
   ScaleData() %>%
   RunPCA(npcs = 50) %>%
@@ -149,7 +167,8 @@ plot2
 ### 8.2-A Using Seurat 
 
 ```{r}
-seurat_objs <- list(DS1 = seurat_ctl, DS2 = seurat_denerv)
+seurat_objs <- list(seurat_ctl, seurat_denerv, seurat_d2, seurat_ctl_pl)
+# seurat_objs <- list(DS1 = seurat_ctl, DS2 = seurat_denerv)
 anchors <- FindIntegrationAnchors(object.list = seurat_objs, dims = 1:30)
 seurat.integrate <- IntegrateData(anchors, dims = 1:30)
 ```
@@ -161,13 +180,13 @@ ElbowPlot(seurat.integrate, ndims = ncol(Embeddings(seurat.integrate, "pca")))
 ```
 
 ```{r}
-seurat.integrate <- RunUMAP(seurat.integrate, dims = 1:15)
+seurat.integrate <- RunUMAP(seurat.integrate, dims = 1:25)
 ```
 
 ```{r}
 DefaultAssay(seurat.integrate) <- "RNA"
 plot1 <- UMAPPlot(seurat.integrate, group.by="orig.ident")
-plot2 <- FeaturePlot(seurat.integrate, c("Myh1","Myh2","Myh4","Myh7"), ncol=2, pt.size = 0.1)
+plot2 <- FeaturePlot(seurat.integrate, c("Myh1","Myh2","Myh4","Col22a1"), ncol=2, pt.size = 0.1)
 
 plot1
 plot2
@@ -176,24 +195,22 @@ plot2
 ### 8.2-B Using Harmony 
 
 ```{r}
-seurat.harm <- merge(seurat_ctl, c(seurat_ctk, seurat_denerv)) %>%
+seurat.harm <- merge(seurat_ctl, c(seurat_denerv, seurat_d2, seurat_ctl_pl)) %>%
   FindVariableFeatures(nfeatures = 3000) %>%
   ScaleData() %>%
   RunPCA(npcs = 50)
 
-seurat.harm <- RunHarmony(seurat.harm, group.by.vars = "orig.ident", dims.use = 1:20, max.iter.harmony = 50)
-seurat.harm <- RunUMAP(seurat.harm, reduction = "harmony", dims = 1:20)
+seurat.harm <- RunHarmony(seurat.harm, group.by.vars = "orig.ident", dims.use = 1:25, max.iter.harmony = 50)
+seurat.harm <- RunUMAP(seurat.harm, reduction = "harmony", dims = 1:25)
 ```
 
 ```{r}
 DefaultAssay(seurat.harm) <- "RNA"
 plot1 <- UMAPPlot(seurat.harm, group.by="orig.ident")
-plot2 <- UMAPPlot(seurat.harm, label = T)
-plot3 <- FeaturePlot(seurat.harm, c("Myh1","Myh2","Myh4","Myh7"), ncol=2, pt.size = 0.1)
+plot2 <- FeaturePlot(seurat.harm, c("Myh1","Myh2","Myh4","Myh7"), ncol=2, pt.size = 0.1)
 
 plot1
 plot2
-plot3
 ```
 
 ### Save
@@ -205,28 +222,29 @@ saveRDS(seurat.integrate, file="save/seurat_4integrate")
 ## 9. Clustering 
 
 ```{r}
-seurat.rna <- seurat.integrate
+seurat.rna <- seurat.harm
 seurat.rna$status <- NA 
-seurat.rna$status[seurat.rna$orig.ident == "Ctl"] <- "WT"
-# seurat.rna$status[seurat.rna$orig.ident == "Ctk"] <- "WT"
+seurat.rna$status[seurat.rna$orig.ident == "Ctl"] <- "C"
+seurat.rna$status[seurat.rna$orig.ident == "Ctl-Pl"] <- "C"
+seurat.rna$status[seurat.rna$orig.ident == "D2"] <- "D"
 seurat.rna$status[seurat.rna$orig.ident == "Denerv"] <- "D"
-# seurat.rna$status[seurat.rna$orig.ident == "KO"] <- "KO"
+# seurat.rna$status[seurat.rna$orig.ident == "Tenotomy"] <- "T"
 ```
 
 ```{r}
-DefaultAssay(seurat.rna) <- "integrated"
-seurat.rna <- FindNeighbors(seurat.rna, dims = 1:ncol(Embeddings(seurat.rna)))
-seurat.rna <- FindClusters(seurat.rna, resolution = 0.8)
+# DefaultAssay(seurat.rna) <- "integrated"
+seurat.rna <- FindNeighbors(seurat.rna, dims = 1:ncol(Embeddings(seurat.rna)), reduction = "harmony")
+seurat.rna <- FindClusters(seurat.rna, resolution = 0.6)
 
 DimPlot(seurat.rna, reduction = "umap", label = TRUE)
 ```
 
 ```{r}
-DefaultAssay(seurat.rna) <- "integrated"
+# DefaultAssay(seurat.rna) <- "integrated"
 resolution.range <- seq(from = 0, to = 1.2, by = 0.2)
 seurat.rna.clustree <- FindClusters(object = seurat.rna, resolution = resolution.range)
 head(seurat.rna.clustree@meta.data)
-clustree(seurat.rna.clustree, prefix = 'integrated_snn_res.')
+clustree(seurat.rna.clustree, prefix = 'RNA_snn_res.')
 ```
 
 ## 10. Annotate cells 
@@ -240,47 +258,82 @@ input_data.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> to
 
 ```{r}
 plot1 <- FeaturePlot(seurat.rna, c("Myh1", "Myh2", "Myh4","Col22a1"), ncol = 2)
-plot2 <- FeaturePlot(seurat.rna, c("Myh7", "Pam", "Uty","Gm28653"), ncol = 2)
-plot3 <- VlnPlot(seurat.rna, features = c("Myh1", "Myh2", "Myh7","Col22a1"), pt.size = 0, ncol = 2)
+plot2 <- FeaturePlot(seurat.rna, c("Myh7", "Xist", "Uty","Pax7"), ncol = 2)
+plot3<- FeaturePlot(seurat.rna, c("Runx1", "Sh3d19", "Gadd45a","Dlg2"), ncol = 2)
+
+plot4 <- VlnPlot(seurat.rna, features = c("Myh1", "Myh2", "Myh7","Col22a1"), pt.size = 0, ncol = 2)
 plot1
 plot2 
 plot3
 ```
 
 ```{r}
-new_ident <- setNames(c("myh1,cd36",
-                        "smox,myh4",
-                        "gm28653,smad4",
-                        "ppara,myh1",
-                        "dlg2,gm",
-                        "xist,myhas",
-                        "myh4,mybpc2",
-                        "scn5a,cntfr",
-                        "dlc1,abca8a",
-                        "hectd2os,lmcd1",
-                        "lama2, col22a1",
-                        "ano4,prkar1a"),
+new_ident <- setNames(c("IIb",
+                        "U_Myh4",
+                        "IIx_1",
+                        "D_IIb_1",
+                        "FAPs",
+                        "Mix",
+                        "IIx_2",
+                        "D_IIb_2",
+                        "O_1",
+                        "O_2",
+                        "O_3",
+                        "MTJ",
+                        "O_4",
+                        "O_5",
+                        "NMJ",
+                        "O_6",
+                        "O_7",
+                        "O_8"),
                       levels(seurat.rna))
 seurat.rna <- RenameIdents(seurat.rna, new_ident)
+
 DimPlot(seurat.rna, reduction = "umap", label = TRUE) + NoLegend()
+
+seurat.rna$celltype <- setNames(rep(c("IIb",
+                                      "U_Myh4",
+                                      "IIx_1",
+                                      "D_IIb_1",
+                                      "FAPs",
+                                      "Mix",
+                                      "IIx_2",
+                                      "D_IIb_2",
+                                      "O_1",
+                                      "O_2",
+                                      "O_3",
+                                      "MTJ",
+                                      "O_4",
+                                      "O_5",
+                                      "NMJ",
+                                      "O_6",
+                                      "O_7",
+                                      "O_8"), c(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1)), 
+                                c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17))[as.character(seurat.rna$RNA_snn_res.0.6)]
 ```
 
 
 ```{r}
-seurat.rna$region <- factor(setNames(c("TypeMixt",
-                                       "TypeIIb",
-                                       "Denerv",
-                                       "TypeIIa",
-                                       "Denerv",
-                                       "TypeIIb",
-                                       "TypeIIb",
-                                       "Denerv",
+seurat.rna$region <- factor(setNames(c("IIb",
+                                       "Unclassified",
+                                       "IIx",
+                                       "D_IIb",
+                                       "FAPs",
+                                       "Mix",
+                                       "IIx",
+                                       "D_IIb",
                                        "Other",
-                                       "Denerv",
+                                       "Other",
+                                       "Other",
+                                       "MTJ",
+                                       "Other",
+                                       "Other",
+                                       "NMJ",
+                                       "Other",
                                        "Other",
                                        "Other"),
                                  levels(seurat.rna@active.ident))[seurat.rna@active.ident],
-                        levels=c("TypeIIa","TypeIIb", "TypeMixt", "Other", "Denerv"))
+                        levels=c("IIx","Mix", "IIb", "D_IIb", "MTJ", "NMJ", "FAPs", "Other", "Unclassified"))
 DimPlot(seurat.rna, reduction = "umap", group.by = "region") & NoAxes()
 ```
 
@@ -289,15 +342,21 @@ DimPlot(seurat.rna, reduction = "umap", group.by = "region") & NoAxes()
 ### 11.1 Visualize the compostions 
 
 ```{r}
-freq <- table(seurat.rna$seurat_clusters, seurat.rna$status)
+rainbow <- c("#FF0000", "#FF5733", "#FFC300", "#F8D100", "#9ACD32", "#00FF00", "#00FFFF", "#008080", "#0000FF", "#800080", "#FF00FF", "#FF1493", "#C71585", "#8B0000", "#FF4500", "#FF8C00", "#FFA07A", "#ADD8E6", "#00CED1", "#FFD700", "#FFFF00", "#EE82EE")
+vangogh <- c("#003366", "#003399", "#0033CC", "#0066CC", "#0099CC", "#00CCCC", "#33CCCC", "#66CCCC", "#66CC99", "#99CC99", "#CCCC99", "#CCCC66", "#FFCC00", "#FF9900", "#FF6600", "#FF3300", "#CC0033", "#CC0066", "#CC0099", "#CC33FF", "#9933FF", "#6600FF")
+dechirico <- c("#C0C0C0", "#BFBEBD", "#A6A6A6", "#8C8C8C", "#757575", "#5E5E5E", "#474747", "#303030", "#1A1A1A", "#030303", "#D9C9B9", "#C7B29B", "#A9967A", "#87755E", "#695D4A", "#4E4D43", "#35353E", "#24242E", "#191926", "#614C4A", "#4F3938", "#3D2929")
+
+freq <- table(seurat.rna$region, seurat.rna$status)
 prop <- apply(freq,2,function(x) x/sum(x))
 layout(matrix(1:3,nrow=1)); par(mar=c(8,5,1,1))
-barplot(freq, col=c("#96bbb3","#ebd54c","#364437","#5e341e", "#992b1e"),
+barplot(freq, col=colors <- c("#003366", "#003399", "#0033CC", "#0066CC", "#0099CC", "#00CCCC", "#33CCCC", "#66CCCC", "#66CC99", "#99CC99", "#CCCC99", "#CCCC66", "#FFCC00", "#FF9900", "#FF6600", "#FF3300", "#CC0033", "#CC0066", "#CC0099", "#CC33FF", "#9933FF", "#6600FF"),
         border=NA, las=2, ylab="Frequency", cex.names = 0.8)
-barplot(prop, col=c("#96bbb3","#ebd54c","#364437","#5e341e", "#992b1e"),
+barplot(prop, col=colors <- c("#003366", "#003399", "#0033CC", "#0066CC", "#0099CC", "#00CCCC", "#33CCCC", "#66CCCC", "#66CC99", "#99CC99", "#CCCC99", "#CCCC66", "#FFCC00", "#FF9900", "#FF6600", "#FF3300", "#CC0033", "#CC0066", "#CC0099", "#CC33FF", "#9933FF", "#6600FF"),
         border=NA, las=2, ylab="Proportion", cex.names = 0.8)
 plot.new()
-legend("left", fill=c("#96bbb3","#ebd54c","#364437","#5e341e", "#992b1e"), legend=rownames(freq), bty="n")
+legend("left", fill=c("#003366", "#003399", "#0033CC", "#0066CC", "#0099CC", "#00CCCC", "#33CCCC", "#66CCCC", "#66CC99", "#99CC99", "#CCCC99", "#CCCC66", "#FFCC00", "#FF9900", "#FF6600", "#FF3300", "#CC0033", "#CC0066", "#CC0099", "#CC33FF", "#9933FF", "#6600FF"), legend=rownames(freq), bty="n")
+
+
 ```
 
 ### 11.2-A Composition Comparaison using Fisher  
@@ -314,7 +373,7 @@ freq_fisher <- function(conditions, have_identity){
 
 region_enrichment <- data.frame(region = levels(seurat.rna$region),
                                 t(sapply(levels(seurat.rna$region), function(region)
-                                  freq_fisher(conditions = factor(seurat.rna$status, levels=c("WT","D")),
+                                  freq_fisher(conditions = factor(seurat.rna$status, levels=c("C","D")),
                                               have_identity = seurat.rna$region == region)
                                   )),
                                 row.names=NULL)
@@ -369,9 +428,10 @@ legend("left", fill = c("#cdcdcd","#303030"), legend = c("WT","Dener"), bty="n")
 ##  12. Differential Expression 
 
 ### 12.1 Transcriptome similarity 
+Compare the general transcriptome similarities of the same cell type/state in different samples or conditions in order to get general information whether there exists any substantial transcriptomic changes in this cell type/state between conditions.
 
 ```{r}
-seurat_0 <- subset(seurat.rna, subset = seurat_clusters == 0) %>%
+seurat_5 <- subset(seurat.rna, subset = seurat_clusters == 5) %>%
   FindVariableFeatures()
 avg_expr_org <- sapply(sort(unique(seurat.rna$orig.ident)), function(org)
   rowMeans(seurat_0@assays$RNA@data[,which(seurat_0$orig.ident == org)]))
@@ -383,7 +443,7 @@ plot(hclust(as.dist(1-corr_org)))
 
 ```{r}
 DE_wilcoxauc_0 <- wilcoxauc(seurat_0, group_by = "status") %>%
-  filter(group == "D") %>%
+  dplyr::filter(group == "D") %>%
   mutate(DE = abs(logFC)>log(1.1) & padj < 0.01) %>%
   mutate(DEG = ifelse(abs(logFC)>log(1.1) & padj < 0.01, feature, NA))
 ```
@@ -398,7 +458,58 @@ ggplot(DE_wilcoxauc_0, aes(x = logFC, y = -log10(padj), col=DE, label=DEG)) +
   theme_minimal()
 ```
 
-## 13. Pseudotemporal Analysis 
+## 13. Trajectory Analysis 
+
+### 13.1 Cluster connectivity analysis
+
+```{r}
+cell_attrs <- list(pca = Embeddings(seurat.rna,"pca")[,1:20],
+                   umap = Embeddings(seurat.rna,"umap"),
+                   celltype = seurat.rna@active.ident)
+loom <- loomR::create("save/loom_rna.loom",
+                      data = seurat.rna[['RNA']]@data,
+                      layers = list(counts = seurat.rna[['RNA']]@counts),
+                      cell.attrs = cell_attrs)
+loom$close_all()
+```
+
+```{r}
+adata <- AnnData(X = t(seurat.rna[['RNA']]@data),
+                 obs = data.frame(celltype = seurat.rna@active.ident, row.names = colnames(seurat.rna)),
+                 var = seurat.rna[['RNA']]@meta.features,
+                 layers = list(counts = t(seurat.rna[['RNA']]@counts)),
+                 obsm = list(pca = Embeddings(seurat.rna,"pca")[,1:20],
+                             umap = Embeddings(seurat.rna,"umap"))
+                )
+adata$write_h5ad("save/anndata_rna.h5ad")
+```
+
+```{r}
+py_install("scanpy", pip=T)
+py_install("igraph", pip=T)
+plt <- import("matplotlib")
+sc <- import("scanpy")
+```
+
+```{r}
+adata.rna <- sc$read("save/anndata_rna.h5ad") 
+# or adata_DS1 <- sc$read_loom("save/loom_rna.loom") 
+sc$pp$neighbors(adata.rna, n_neighbors=20L, use_rep='pca')
+sc$tl$paga(adata.rna, groups='celltype')
+adata.rna$write_h5ad("save/anndata_rna.h5ad")
+```
+
+```{r}
+plt$use("Agg", force = TRUE)
+sc$pl$paga(adata.rna,
+           color='celltype',
+           fontsize=7,
+           frameon=FALSE,
+           threshold=0.4,
+           save="rna_paga.png")
+```
+
+### 13.X Using Destiny 
 
 ```{r}
 seurat.type <- subset(seurat.rna, subset = RNA_snn_res.0.8 %in% c(1,2,4,5,6,7))
@@ -438,3 +549,159 @@ plot2
 plot3
 ```
 
+### 13.2 Using Monocle3
+
+```{r}
+seurat.rna.cds <- as.cell_data_set(seurat.rna, reduction = 'umap')
+seurat.rna.cds <- cluster_cells(cds = seurat.rna.cds, reduction_method = "UMAP")
+seurat.rna.cds <- learn_graph(seurat.rna.cds, use_partition = TRUE)
+plot_cells(seurat.rna.cds, color_cells_by = "status", cell_size = 1, group_label_size = 3, label_groups_by_cluster = F, label_leaves = FALSE, label_branch_points = FALSE, graph_label_size = 5)
+# seurat.rna.cds <- order_cells(seurat.rna.cds, reduction_method = "UMAP", root_cells = NULL)
+# plot_cells(seurat.rna.cds, color_cells_by = "pseudotime", cell_size = 0.5, label_groups_by_cluster = FALSE, label_leaves = FALSE, label_branch_points = FALSE, graph_label_size = 4)
+```
+
+## 14. NicheNet analysis 
+
+```{r}
+ligand_target_matrix = readRDS(url("https://zenodo.org/record/3260758/files/ligand_target_matrix.rds"))
+lr_network = readRDS(url("https://zenodo.org/record/3260758/files/lr_network.rds"))
+weighted_networks = readRDS(url("https://zenodo.org/record/3260758/files/weighted_networks.rds"))
+```
+
+```{r}
+nichenet_output = nichenet_seuratobj_aggregate(
+  seurat_obj = seurat.rna, 
+  receiver = "D_IIb_1", 
+  condition_colname = "status", condition_oi = "D", condition_reference = "C", 
+  sender = c("IIb","IIx_1","FAPs","Mix","IIx_2","D_IIb_2","MTJ","NMJ"), 
+  ligand_target_matrix = ligand_target_matrix, lr_network = lr_network, weighted_networks = weighted_networks, organism = "mouse",
+  assay_oi = "RNA")
+```
+```{r}
+nichenet_output$ligand_activities
+nichenet_output$top_ligands
+nichenet_output$ligand_expression_dotplot
+nichenet_output$ligand_differential_expression_heatmap
+nichenet_output$ligand_target_heatmap
+nichenet_output$ligand_target_matrix %>% .[1:10,1:6]
+nichenet_output$ligand_target_df # weight column = regulatory potential
+nichenet_output$top_targets
+nichenet_output$ligand_activity_target_heatmap
+nichenet_output$ligand_receptor_heatmap
+```
+
+```{r}
+avg_expression_ligands = AverageExpression(seurat.rna, features = nichenet_output$top_ligands, assays = "RNA")
+sender_ligand_assignment = avg_expression_ligands$RNA %>% apply(1, function(ligand_expression){
+  ligand_expression > (ligand_expression %>% mean() + ligand_expression %>% sd())
+  }) %>% t()
+sender_ligand_assignment = sender_ligand_assignment %>% apply(2, function(x){x[x == TRUE]}) %>% purrr::keep(function(x){length(x) > 0})
+names(sender_ligand_assignment)
+
+```
+
+```{r}
+all_assigned_ligands = sender_ligand_assignment %>% lapply(function(x){names(x)}) %>% unlist()
+unique_ligands = all_assigned_ligands %>% table() %>% .[. == 1] %>% names()
+general_ligands = nichenet_output$top_ligands %>% setdiff(unique_ligands)
+
+cluster1_specific_ligands = sender_ligand_assignment$D_IIb_1 %>% names() %>% setdiff(general_ligands)
+cluster2_specific_ligands = sender_ligand_assignment$IIb %>% names() %>% setdiff(general_ligands)
+cluster3_specific_ligands = sender_ligand_assignment$IIx_1 %>% names() %>% setdiff(general_ligands)
+cluster4_specific_ligands = sender_ligand_assignment$FAPs %>% names() %>% setdiff(general_ligands)
+
+ligand_type_indication_df = tibble(
+  ligand_type = c(rep("1-specific", times = cluster1_specific_ligands %>% length()),
+                  rep("2-specific", times = cluster2_specific_ligands %>% length()),
+                  rep("3-specific", times = cluster3_specific_ligands %>% length()),
+                  rep("4-specific", times = cluster4_specific_ligands %>% length()),
+                  rep("General", times = general_ligands %>% length())),
+  ligand = c(cluster1_specific_ligands, cluster2_specific_ligands, cluster3_specific_ligands, cluster4_specific_ligands, general_ligands))
+```
+
+```{r}
+active_ligand_target_links_df = nichenet_output$ligand_target_df %>% mutate(target_type = "test") %>% inner_join(ligand_type_indication_df) 
+
+cutoff_include_all_ligands = active_ligand_target_links_df$weight %>% quantile(0.40)
+
+active_ligand_target_links_df_circos = active_ligand_target_links_df %>% filter(weight > cutoff_include_all_ligands)
+
+ligands_to_remove = setdiff(active_ligand_target_links_df$ligand %>% unique(), active_ligand_target_links_df_circos$ligand %>% unique())
+targets_to_remove = setdiff(active_ligand_target_links_df$target %>% unique(), active_ligand_target_links_df_circos$target %>% unique())
+  
+circos_links = active_ligand_target_links_df %>% filter(!target %in% targets_to_remove &!ligand %in% ligands_to_remove)
+```
+
+```{r}
+grid_col_ligand =c("General" = "lawngreen",
+            "1-specific" = "royalblue",
+            "2-specific" = "darkgreen",
+            "3-specific" = "violet",
+            "4-specific" = "steelblue2")
+grid_col_target =c(
+            "test" = "tomato")
+
+grid_col_tbl_ligand = tibble(ligand_type = grid_col_ligand %>% names(), color_ligand_type = grid_col_ligand)
+grid_col_tbl_target = tibble(target_type = grid_col_target %>% names(), color_target_type = grid_col_target)
+
+circos_links = circos_links %>% mutate(ligand = paste(ligand," ")) # extra space: make a difference between a gene as ligand and a gene as target!
+circos_links = circos_links %>% inner_join(grid_col_tbl_ligand) %>% inner_join(grid_col_tbl_target)
+links_circle = circos_links %>% select(ligand,target, weight)
+
+ligand_color = circos_links %>% distinct(ligand,color_ligand_type)
+grid_ligand_color = ligand_color$color_ligand_type %>% set_names(ligand_color$ligand)
+target_color = circos_links %>% distinct(target,color_target_type)
+grid_target_color = target_color$color_target_type %>% set_names(target_color$target)
+
+grid_col =c(grid_ligand_color,grid_target_color)
+
+# give the option that links in the circos plot will be transparant ~ ligand-target potential score
+transparency = circos_links %>% mutate(weight =(weight-min(weight))/(max(weight)-min(weight))) %>% mutate(transparency = 1-weight) %>% .$transparency 
+```
+
+```{r}
+target_order = circos_links$target %>% unique()
+ligand_order = c(cluster1_specific_ligands, cluster2_specific_ligands, cluster3_specific_ligands,cluster4_specific_ligands, general_ligands) %>% c(paste(.," ")) %>% intersect(circos_links$ligand)
+order = c(ligand_order,target_order)
+```
+
+```{r}
+width_same_cell_same_ligand_type = 0.5
+width_different_cell = 6
+width_ligand_target = 15
+width_same_cell_same_target_type = 0.5
+
+circos_links %>% filter(ligand_type == "1-specific")
+circos_links %>% filter(ligand_type == "2-specific")
+circos_links %>% filter(ligand_type == "3-specific")
+circos_links %>% filter(ligand_type == "4-specific")
+circos_links %>% filter(ligand_type == "General")
+circos_links %>% filter(ligand_type == "test")
+
+gaps = c(
+  # width_ligand_target,
+  rep(width_same_cell_same_ligand_type, times = (circos_links %>% filter(ligand_type == "1-specific") %>% distinct(ligand) %>% nrow() -1)),
+  width_different_cell,
+  rep(width_same_cell_same_ligand_type, times = (circos_links %>% filter(ligand_type == "2-specific") %>% distinct(ligand) %>% nrow() -1)),
+  width_different_cell,
+  rep(width_same_cell_same_ligand_type, times = (circos_links %>% filter(ligand_type == "1-specific") %>% distinct(ligand) %>% nrow() -1)),
+  width_different_cell,
+  rep(width_same_cell_same_ligand_type, times = (circos_links %>% filter(ligand_type == "1-specific") %>% distinct(ligand) %>% nrow() -1)),
+  width_different_cell,
+  rep(width_same_cell_same_ligand_type, times = (circos_links %>% filter(ligand_type == "General") %>% distinct(ligand) %>% nrow() -1)),
+  width_ligand_receptor,
+  rep(width_same_cell_same_receptor_type, times = (circos_links %>% filter(receptor_type == "test") %>% distinct(receptor) %>% nrow() -1)),
+  width_ligand_receptor
+  )
+```
+
+```{r}
+
+```
+
+## 15. Convert
+
+```{r}
+SaveH5Seurat(seurat.rna, filename = "u_integrated_ctl_denerv.h5Seurat")
+Convert("u_integrated_ctl_denerv.h5Seurat", dest = "h5ad")
+```

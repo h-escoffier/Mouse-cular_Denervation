@@ -1,0 +1,653 @@
+---
+title: "Ultimate snRNA+ATAC Analysis"
+author: "Hugues Escoffier"
+date: "2023-02-15"
+output: html_document
+---
+
+# SnRNA-ATAC Analysis
+
+## 0. Librairies 
+
+```{r setup, include=FALSE}
+# CRAN 
+library(Seurat)
+library(SeuratWrappers)
+library(Signac)
+library(Matrix)
+library(harmony)
+library(dplyr)
+library(clustree)
+library(ggseqlogo)
+library(doParallel)
+library(readr)
+library(monocle3)
+# Devtools
+library(presto)
+library(Pando)
+# BioConductor 
+library(GenomicScores)
+library(TFBSTools)
+library(JASPAR2020)
+library(motifmatchr)
+library(chromVAR)
+# Genomes
+library(EnsDb.Mmusculus.v79)
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(BSgenome.Hsapiens.UCSC.hg38)
+```
+
+## 1. Seurat Object
+
+```{r}
+seurat.integrate <- readRDS("save/seurat_wnn")
+```
+
+
+```{r}
+# Load .h5 files
+counts_control = Read10X_h5("data/Ctl-D/outs/filtered_feature_bc_matrix.h5")
+counts_control_ko = Read10X_h5("data/Ctl/outs/filtered_feature_bc_matrix.h5")
+counts_denervated = Read10X_h5("data/Denerve/outs/filtered_feature_bc_matrix.h5")
+```
+
+```{r}
+# Add Annotations 
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotations) <- "UCSC"
+genome(annotations) <- "mm10"
+```
+
+```{r}
+# Create the seurat objects
+seurat_control <- CreateSeuratObject(counts = counts_control$`Gene Expression`, 
+                                     assay = "RNA", 
+                                     project = "Control")
+seurat_control[["ATAC"]] <- CreateChromatinAssay(counts = counts_control$Peaks, 
+                                                 annotation = annotations,
+                                                 fragments = "data/Ctl-D/outs/atac_fragments.tsv.gz",
+                                                 sep = c(":", "-"),
+                                                 genome = "mm10")
+
+seurat_denervated <- CreateSeuratObject(counts = counts_denervated$`Gene Expression`, 
+                                     assay = "RNA", 
+                                     project = "7D Post Denervation")
+seurat_denervated[["ATAC"]] <- CreateChromatinAssay(counts = counts_denervated$Peaks, 
+                                                 annotation = annotations,
+                                                 fragments = "data/Denerve/outs/atac_fragments.tsv.gz",
+                                                 sep = c(":", "-"),
+                                                 genome = "mm10")
+
+seurat_ctl_ko <- CreateSeuratObject(counts = counts_control_ko$`Gene Expression`, 
+                                     assay = "RNA", 
+                                     project = "CTL_KO")
+seurat_ctl_ko[["ATAC"]] <- CreateChromatinAssay(counts = counts_control_ko$Peaks, 
+                                                 annotation = annotations,
+                                                 fragments = "data/Ctl/outs/atac_fragments.tsv.gz",
+                                                 sep = c(":", "-"),
+                                                 genome = "mm10")
+```
+
+```{r}
+# Merge the snRNA data 
+seurat_merge <- merge(seurat_control, seurat_denervated)
+# Merge the snATAC data 
+peaks <- reduce(unlist(as(c(seurat_control@assays$ATAC@ranges,
+                            seurat_denervated@assays$ATAC@ranges),
+                            "GRangesList")))
+peakwidths <- width(peaks)
+peaks <- peaks[peakwidths < 10000 & peakwidths > 20]
+
+counts_atac_merge <- FeatureMatrix(seurat_merge@assays$ATAC@fragments,
+                                   features = peaks,
+                                   cells = colnames(seurat_merge))
+
+seurat_merge[["ATAC"]] <- CreateChromatinAssay(counts_atac_merge, 
+                                               fragments = seurat_merge@assays$ATAC@fragments, 
+                                               annotation = seurat_merge@assays$ATAC@annotation,
+                                               sep = c(":", "-"),
+                                               genome = "mm10")
+```
+
+```{r}
+# Redo a peak calling step using MACS
+peaks <- CallPeaks(seurat_merge, 
+                   assay = "ATAC", 
+                   group.by = "orig.ident", 
+                   macs2.path = "/home/bioinfo--3/anaconda3/bin/macs3",  # Install of MACS3: pip install MACS3 | sudo find / -name macs3
+                   effective.genome.size = 2.6e9)  # Effective size of the mouse genome 
+
+counts_atac <- FeatureMatrix(seurat_merge@assays$ATAC@fragments,
+                             features = peaks, 
+                             cells = colnames(seurat_merge))
+seurat_merge[["ATAC"]] <- CreateChromatinAssay(counts_atac, 
+                                                fragments = seurat_merge@assays$ATAC@fragments, 
+                                                annotation = seurat_merge@assays$ATAC@annotation,
+                                                genome = 'mm10')
+```
+
+```{r}
+# Keep only standard chromosomes 
+standard_chroms <- standardChromosomes(BSgenome.Mmusculus.UCSC.mm10)
+idx_standard_chroms <- which(as.character(seqnames(granges(seurat_merge[["ATAC"]]))) %in% standard_chroms)
+seurat_merge[["ATAC"]] <- subset(seurat_merge[["ATAC"]], 
+                                 features = rownames(seurat_merge[["ATAC"]])[idx_standard_chroms])
+seqlevels(seurat_merge[["ATAC"]]@ranges) <- intersect(seqlevels(granges(seurat_merge[["ATAC"]])),
+                                                      unique(seqnames(granges(seurat_merge[["ATAC"]]))))
+```
+
+## 2. Trimming 
+
+```{r}
+seurat_merge <- PercentageFeatureSet(seurat_merge, pattern = "^mt-", col.name = "percent.mt", assay = "RNA")
+seurat_merge <- NucleosomeSignal(seurat_merge, assay = "ATAC")
+seurat_merge <- TSSEnrichment(seurat_merge, assay = "ATAC")
+
+VlnPlot(seurat_merge,
+        features = c("nFeature_RNA",
+                     "percent.mt",
+                     "nFeature_ATAC",
+                     "TSS.enrichment",
+                     "nucleosome_signal"),
+        ncol = 5,
+        pt.size = 0)
+```
+
+```{r}
+# Choose your cutoffs for each metrics 
+seurat_merge <- subset(seurat_merge,
+                       subset = nFeature_RNA > 200 &
+                         nFeature_RNA < 2500 &
+                         percent.mt < 0.8 &
+                         nFeature_ATAC > 100 &
+                         nFeature_ATAC < 10000 &
+                         TSS.enrichment > 2 &
+                         nucleosome_signal < 10)
+```
+
+## 3. snRNA Analysis 
+
+```{r}
+DefaultAssay(seurat_merge) <- "RNA"
+# Normalize 
+seurat_merge <- NormalizeData(seurat_merge, normalization.method = "LogNormalize", scale.factor = 10000) 
+# Find Variable Features
+seurat_merge <- FindVariableFeatures(seurat_merge, selection.method = "vst", nfeatures = 2000)
+# Score cell cycle phases
+seurat_merge <- CellCycleScoring(seurat_merge,
+                                 s.features = cc.genes.updated.2019$s.genes,
+                                 g2m.features = cc.genes.updated.2019$g2m.genes)
+# Scale
+all.genes <- rownames(seurat_merge)
+seurat_merge <- ScaleData(seurat_merge, features = all.genes)
+# PCA
+seurat_merge <- RunPCA(seurat_merge, npcs=50, features = VariableFeatures(object = seurat_merge))
+# Plot 
+ElbowPlot(seurat_merge, ndims = 50)
+```
+
+```{r}
+seurat_merge <- RunUMAP(seurat_merge, dims = 1:30,  
+                        reduction.name = 'umap_rna', 
+                        reduction.key = "UMAPRNA_")
+DimPlot(seurat_merge, group.by = "orig.ident", reduction = "umap_rna")
+FeaturePlot(seurat_merge, c("Myh1", "Myh2", "Myh4", "Col22a1"), reduction = "umap_rna") & NoAxes() & NoLegend()
+```
+
+```{r}
+# Integration, Benchmark (DOI: 10.1186/s13059-019-1850-9)
+DefaultAssay(seurat_merge) <- "RNA"
+integration.anchors <- FindIntegrationAnchors(
+  object.list = SplitObject(seurat_merge, "orig.ident"),
+  anchor.features = SelectIntegrationFeatures(object.list = SplitObject(seurat_merge, "orig.ident")),
+  reduction = "cca",
+  dims = 1:30
+)
+seurat_integrated_rna <- IntegrateEmbeddings(
+  anchorset = integration.anchors,
+  reductions = seurat_merge[["pca"]],
+  new.reduction.name = "integrated_pca",
+  dims.to.integrate = 1:30
+)
+seurat_merge[["integrated_pca_rna"]] <- CreateDimReducObject(
+  Embeddings(seurat_integrated_rna, "integrated_pca")[colnames(seurat_merge),], key = "INTEGRATEDPCARNA_", assay = "RNA"
+)
+seurat_merge <- RunUMAP(seurat_merge,
+                        reduction = "integrated_pca_rna",
+                        dims = 1:30,
+                        reduction.name = "umap_seurat_rna",
+                        reduction.key = "UMAPSEURATRNA_")
+DimPlot(seurat_merge,
+        group.by = "orig.ident",
+        reduction = "umap_seurat_rna") & NoAxes()
+FeaturePlot(seurat_merge, c("Myh1", "Myh2", "Myh4", "Col22a1"), reduction = "umap_seurat_rna") & NoAxes() & NoLegend()
+```
+
+```{r}
+# Integration using Harmony
+# The results are similar as the integration with seurat.
+seurat_merge <- RunHarmony(seurat_merge, group.by.vars = "orig.ident", dims.use = 1:15, max.iter.harmony = 50)
+seurat_merge <- RunUMAP(seurat_merge, reduction = "harmony", 
+                        dims = 1:15,
+                        reduction.name = 'harmony_umap_rna', 
+                        reduction.key = "UMAPHARMRNA_")
+DimPlot(seurat_merge, group.by = "orig.ident", reduction = "harmony_umap_rna")
+FeaturePlot(seurat_merge, c("Myh1", "Myh2", "Myh4", "Col22a1"), reduction = "harmony_umap_rna") & NoAxes() & NoLegend()
+```
+
+```{r}
+# Clustering 
+seurat_merge <- FindNeighbors(seurat_merge,
+                              reduction = "harmony",
+                              dims = 1:ncol(Embeddings(seurat_merge, "harmony"))) %>% 
+  FindClusters(resolution = 0.3) # Possibility to add an analysis with clustree in order to choose the resolution 
+DimPlot(seurat_merge, 
+        group.by = "RNA_snn_res.0.3",
+        reduction = "harmony_umap_rna", 
+        label = TRUE) & NoAxes() & NoLegend()
+```
+
+## 4. snATAC Analysis
+
+```{r}
+DefaultAssay(seurat_merge) <- "ATAC"
+# Feature Selection
+seurat_merge <- FindTopFeatures(seurat_merge, min.cutoff = 50)  # At least in 50 cells 
+# Normalization
+seurat_merge <- RunTFIDF(seurat_merge, method = 1)
+# Linear Dimension Reduction
+seurat_merge <- RunSVD(seurat_merge, n = 50)
+```
+
+```{r}
+ElbowPlot(seurat_merge, ndims = 30, reduction = "lsi")
+DepthCor(seurat_merge, n =30)
+```
+
+```{r}
+DefaultAssay(seurat_merge) <- "ATAC"
+seurat_merge <- RunUMAP(seurat_merge,
+                        reduction = "lsi",
+                        dims = 6:20,  # This parameters can be change depending on how do you read the Elbow and the DepthCor 
+                        reduction.name = "umap_atac",
+                        reduction.key = "UMAPATAC_")
+DimPlot(seurat_merge,
+        group.by = "orig.ident",
+        reduction = "umap_atac") & NoAxes()
+FeaturePlot(seurat_merge,
+            c("Myh1", "Xist", "Uty", "Col22a1"),
+            reduction = "umap_atac") & NoAxes() & NoLegend()
+```
+
+```{r}
+# Integration 
+DefaultAssay(seurat_merge) <- "ATAC"
+integration.anchors <- FindIntegrationAnchors(
+  object.list = SplitObject(seurat_merge, "orig.ident"),
+  anchor.features = rownames(seurat_merge),
+  reduction = "rlsi",
+  dims = 6:20
+)
+seurat_integrated_atac <- IntegrateEmbeddings(
+  anchorset = integration.anchors,
+  reductions = seurat_merge[["lsi"]],
+  new.reduction.name = "integrated_lsi",
+  dims.to.integrate = 1:30
+)
+seurat_merge[["integrated_lsi_atac"]] <- CreateDimReducObject(
+  Embeddings(seurat_integrated_atac, "integrated_lsi")[colnames(seurat_merge),], key = "INTEGRATEDLSIATAC_", assay = "ATAC"
+)
+seurat_merge <- RunUMAP(seurat_merge,
+                        reduction = "integrated_lsi_atac",
+                        dims = 6:20,
+                        reduction.name = "umap_seurat_atac",
+                        reduction.key = "UMAPSEURATATAC_")
+```
+
+```{r}
+DimPlot(seurat_merge,
+        group.by = "orig.ident",
+        reduction = "umap_seurat_atac") & NoAxes()
+FeaturePlot(seurat_merge, c("Myh1", "Myh2", "Myh4", "Col22a1"), reduction = "umap_seurat_atac") & NoAxes() & NoLegend()
+
+```
+
+## 5. snMultiome Analysis
+
+### 5.1 WNN Analysis 
+
+```{r}
+seurat_wnn <- FindMultiModalNeighbors(seurat_merge, 
+                                      reduction.list = list("integrated_pca_rna", "integrated_lsi_atac"),
+                                      dims.list = list(1:ncol(Embeddings(seurat_merge, "integrated_pca_rna")),
+                                                       1:ncol(Embeddings(seurat_merge, "integrated_lsi_atac"))),
+                                      modality.weight.name = c("RNA.weight", "ATAC.weight"),
+                                      verbose = TRUE)
+seurat_wnn <- RunUMAP(seurat_wnn, nn.name = "weighted.nn", assay = "RNA")
+seurat_wnn <- FindClusters(seurat_wnn, graph.name = "wsnn", algorithm = 2, resolution = 1)
+
+UMAPPlot(seurat_wnn, group.by = "orig.ident") & NoAxes()
+UMAPPlot(seurat_wnn, group.by = "wsnn_res.1", label = TRUE) & NoAxes() & NoLegend()
+```
+
+```{r}
+# Clustree
+resolution.range <- seq(from = 0, to = 1.6, by = 0.2)
+seurat.clustree <- FindClusters(object = seurat_wnn, graph.name = "wsnn", algorithm = 2, resolution = resolution.range)
+clustree(seurat.clustree, prefix = 'wsnn_res.')
+```
+
+```{r}
+DefaultAssay(seurat_wnn) <- "RNA"
+FeaturePlot(seurat_wnn, c("Maf"), 
+            reduction = "umap") & NoAxes() 
+FeaturePlot(seurat_wnn, c("Eya4"), 
+            reduction = "umap") & NoAxes() 
+FeaturePlot(seurat_wnn, c("Myh4"), 
+            reduction = "umap") & NoAxes()
+FeaturePlot(seurat_wnn, c("Xist", "Adamtsl1", "Agbl1", "Musk"), 
+            reduction = "umap") & NoAxes() & NoLegend()
+
+```
+
+```{r}
+seurat_wnn$celltype <- setNames(rep(c("Myh1.Cd36", 
+                                      "Plxdc2.Dlg2", 
+                                      "Myh4.Mybpc2", 
+                                      "Myh4.Smox",
+                                      "?",
+                                      "Myh4.Xist", 
+                                      "Myh1.Ppara", 
+                                      "Cntfr.Scn5a",
+                                      "Hectd2os.Actn2", 
+                                      "Abca8a.Ebf1", 
+                                      "Lama2.Col22a1", 
+                                      "Dlc1.Opcml", 
+                                      "Ano4.Prkar1a"), c(1,1,1,1,1,1,1,1,1,1,1,1,1)), 
+                                c(0,1,2,3,4,5,6,7,8,9,10,11,12))[as.character(seurat_wnn$wsnn_res.1)]
+UMAPPlot(seurat_wnn, group.by = "celltype", label = TRUE) & NoAxes()
+```
+
+```{r}
+# Visualize the composition
+freq <- table(seurat_wnn$celltype, seurat_wnn$orig.ident)
+prop <- apply(freq,2,function(x) x/sum(x))
+layout(matrix(1:3,nrow=1)); par(mar=c(8,5,1,1))
+barplot(freq, col=c("#fad390","#f6b93b", "#fa983a", "#eb2f06","#b71540", "#0c2461", "#1e3799", "#60a3bc", "#b8e994", "#78e08f", "#38ada9", "#0a3d62", "#3c6382"),
+        border=NA, las=2, ylab="Frequency", cex.names = 0.8)
+barplot(prop, col=c("#fad390","#f6b93b", "#fa983a", "#eb2f06","#b71540", "#0c2461", "#1e3799", "#60a3bc", "#b8e994", "#78e08f", "#38ada9", "#0a3d62", "#3c6382"),
+        border=NA, las=2, ylab="Proportion", cex.names = 0.8)
+plot.new()
+legend("left", fill=c("#fad390","#f6b93b", "#fa983a", "#eb2f06","#b71540", "#0c2461", "#1e3799", "#60a3bc", "#b8e994", "#78e08f", "#38ada9", "#0a3d62", "#3c6382"), legend=rownames(freq), bty="n")
+```
+
+## 5.2 Gene & Peak Marker 
+We apply differential expression analysis to compare each cell type versus the rest to identify gene markers for the cell type. We also apply differential accessibility analysis to identify chromatin peaks which are accessible in a cell-type-specific manner.
+
+```{r}
+# Differential expressed genes (DEGs) per cluster
+DefaultAssay(seurat_wnn) <- "RNA"
+integrated.markers.rna <- FindAllMarkers(seurat_wnn, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
+integrated.markers.rna %>% group_by(cluster) %>% slice_max(n = 10, order_by = avg_log2FC)
+integrated.markers.rna %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> topXrna
+# write.csv(topX, "integrated_topX_genes_per_cluster.csv", row.names=FALSE)
+```
+
+```{r}
+integrated.markers.rna <- FindMarkers(seurat_wnn, group.by = "orig.ident", ident.1 = "DENERVATED", min.pct = 0.25, logfc.threshold = 0.25, only.pos = FALSE)
+print(integrated.markers.rna)
+write.csv(integrated.markers.rna, "integrated_denervated_all_cluster.csv", row.names=TRUE)
+```
+
+```{r}
+for(i in 0:12){
+  integrated.markers.loop <- FindMarkers(seurat_wnn, ident.1 = i, min.pct = 0.25, logfc.threshold = 0.25, only.pos = F)
+  print(integrated.markers.loop)
+  write.csv(integrated.markers.loop, paste("integrated_cluster_", i, ".csv", sep=""), row.names=TRUE)
+}
+```
+
+```{r}
+integrated.markers.rna <- FindMarkers(seurat_wnn, ident.1 = 1, ident.2 = c(2,3,5), min.pct = 0.25, logfc.threshold = 0.25, only.pos = F)
+print(integrated.markers.rna)
+write.csv(integrated.markers.rna, "integrated_denervated_myh4d_vs_ctl.csv", row.names=TRUE)
+```
+
+
+```{r}
+DefaultAssay(seurat_wnn) <- "RNA"
+DE_ct <- wilcoxauc(seurat_wnn, "celltype", seurat_assay = "RNA")
+top_markers_ct <- DE_ct %>%
+  dplyr::filter(abs(logFC) > log(1.2) &
+           padj < 0.01 &
+           auc > 0.65 &
+           pct_in - pct_out > 30 &
+           pct_out < 20) %>%
+  group_by(group) %>%
+  top_n(10, wt = auc)
+
+top_markers_ct
+```
+
+```{r}
+# Differential peaks per cluster
+DefaultAssay(seurat_wnn) <- "ATAC"
+integrated.markers <- FindAllMarkers(seurat_wnn, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
+integrated.markers %>% group_by(cluster) %>% slice_max(n = 10, order_by = avg_log2FC)
+integrated.markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) -> topX_atac
+```
+
+```{r}
+DefaultAssay(seurat_wnn) <- "ATAC"
+DA_ct <- wilcoxauc(seurat_wnn, "celltype", seurat_assay = "ATAC")
+top_peaks_ct <- DA_ct %>%
+  dplyr::filter(abs(logFC) > log(1.1) &
+           padj < 0.01 &
+           auc > 0.55) %>%
+  group_by(group) %>%
+  top_n(100, wt = auc)
+
+top_peaks_ct %>% top_n(5, wt=auc)
+```
+
+Link a gene with its nearby peaks, which are its potential cis-regulatory elements.
+
+```{r}
+seurat_wnn <- RegionStats(seurat_wnn, 
+                          genome = BSgenome.Mmusculus.UCSC.mm10)
+seurat_wnn <- LinkPeaks(seurat_wnn,
+                        peak.assay = "ATAC",
+                        expression.assay = "RNA",
+                        genes.use = topXrna$feature)
+```
+
+```{r}
+DefaultAssay(seurat_wnn) <- "ATAC"
+CoveragePlot(seurat_wnn,
+             region = "Col22a1",
+             features = "Col22a1",
+             group.by = "celltype",
+             #split.by = "orig.ident",
+             extend.upstream = 1000,
+             extend.downstream = 1000,
+             expression.assay = "RNA"
+             )
+```
+
+## 5.3 TF Binding Motif Enrichment 
+
+By analyzing open chromatin regions, we can potentially identify cis-regulatory elements that are crucial for regulating cell type identity and state transitions. These regions are typically bound by trans-regulators such as transcription factors (TFs) which have strong sequence specificity and can be summarized into sequence motifs called TF binding motifs. If certain TFs are important for regulating a particular cell type, the genomic sequences in the cell-type-specific peaks are likely enriched with the corresponding TF binding motifs. By analyzing these motifs, we can identify the TFs responsible for establishing and maintaining cell type identity. To do this, we require a database of TF binding motifs such as TRANSFAC and JASPAR. By scanning for sequences that match these motifs, we can predict possible binding sites for TFs with binding motif information in the databases and determine their enrichment in the peak list of interest in comparison to other peaks.
+Chromvar is a method allowing the analysis of the enrichment of motifs that does not require the entry of a specific list of peaks of interest.
+
+```{r}
+pfm <- getMatrixSet(
+  x = JASPAR2020,
+  opts = list(collection = "CORE", tax_group = 'vertebrates', all_versions = FALSE)
+  )
+
+df_pfm <- data.frame(t(sapply(pfm, function(x)
+  c(id=x@ID, name=x@name, symbol=ifelse(!is.null(x@tags$symbol),x@tags$symbol,NA)))))
+
+seurat_wnn <- AddMotifs(seurat_wnn, genome = BSgenome.Mmusculus.UCSC.mm10, pfm = pfm)
+```
+
+```{r}
+seurat_wnn <- RunChromVAR(seurat_wnn, genome = BSgenome.Mmusculus.UCSC.mm10)
+DefaultAssay(seurat_wnn) <- "chromvar"
+DA_motifs_ct <- wilcoxauc(seurat_wnn, group_by = "celltype", seurat_assay = "chromvar") %>%
+  mutate(symbol = setNames(ifelse(is.na(df_pfm$symbol), df_pfm$name, df_pfm$symbol),
+                           df_pfm$id)[feature])
+enriched_motifs_ct <- DA_motifs_ct %>%
+  dplyr::filter(padj < 0.01 & auc > 0.7) %>%
+  group_by(group)
+top_motifs_ct <- top_n(enriched_motifs_ct, 3, wt=auc)
+
+
+bluered_colscheme <- colorRampPalette(rev(c("#d73027","#f46d43","#fdae61","#fee090","#e0f3f8","#abd9e9","#74add1","#4575b4")))
+for (x in top_motifs_ct$feature) {
+  print(FeaturePlot(seurat_wnn,
+              features = x,
+              cols = bluered_colscheme(30),
+              reduction = "umap",
+              ncol = 1) & NoAxes() & NoLegend())
+}
+
+```
+
+```{r}
+DefaultAssay(seurat_wnn) <- "chromvar"
+tfs <- read.table("data/Mus_musculus_TF", sep="\t", header=T)
+
+tf_motifs_ct <- enriched_motifs_ct %>%
+  dplyr::filter(symbol %in% tfs$Symbol)
+marker_tfs_ct <- DE_ct %>%
+  dplyr::filter(feature %in% tfs$Symbol &
+         abs(logFC) > log(1.2) &
+         padj < 0.01 &
+         auc > 0.65 &
+         pct_in - pct_out > 20) %>%
+  inner_join(tf_motifs_ct,
+             by = c("feature" = "symbol"),
+             suffix = c("_tf","_motif")) %>%
+  dplyr::filter(group_tf == group_motif)
+
+top_tfs_ct <- group_by(marker_tfs_ct, group_tf) %>%
+  top_n(3, wt = auc_motif)
+
+beach_colscheme <- colorRampPalette(c("#cdcdcd","#edf8b1","#7fcdbb","#41b6c4","#1d91c0","#225ea8","#0c2c84"))
+for (x in top_tfs_ct$feature) {
+  DefaultAssay(seurat_wnn) <- "RNA"
+  p1 <- FeaturePlot(seurat_wnn,
+                    x,
+                    reduction = "umap",
+                    order=T,
+                    cols=beach_colscheme(30),
+                    ncol=1) & NoAxes() & NoLegend()
+  print(p1)
+}
+for (x in top_tfs_ct$feature_motif) {
+  DefaultAssay(seurat_wnn) <- "chromvar"
+  p2 <- FeaturePlot(seurat_wnn,
+                    x,
+                    reduction = "umap",
+                    order=T,
+                    cols=bluered_colscheme(30),
+                    ncol=1) & NoAxes() & NoLegend()
+  print(p2)
+}
+
+```
+
+## 5.4 Gene regulatory network reconstruction 
+
+```{r}
+DefaultAssay(seurat_wnn) <- "RNA"
+seurat_wnn_test <- FindVariableFeatures(seurat_wnn, selection.method = "vst", nfeatures = 2000)
+
+seurat_wnn_test <- initiate_grn(seurat_wnn_test,
+                       rna_assay = "RNA", peak_assay = "ATAC")
+```
+
+```{r}
+data(motifs)
+seurat_wnn_test <- find_motifs(
+    seurat_wnn_test,
+    pfm = motifs,
+    genome = BSgenome.Mmusculus.UCSC.mm10
+)
+```
+
+```{r}
+# BUG 
+seurat_wnn_test <- infer_grn(
+    seurat_wnn)
+```
+
+```{r}
+grn <- seurat_wnn@grn@networks$glm_network@coefs %>%
+  filter(padj < 0.01)
+grn
+```
+
+```{r}
+positive_regulons <- split(grn$target[grn$estimate>0], grn$tf[grn$estimate>0])
+positive_regulons <- positive_regulons[lengths(positive_regulons) > 10]
+negative_regulons <- split(grn$target[grn$estimate<0], grn$tf[grn$estimate<0])
+negative_regulons <- negative_regulons[lengths(negative_regulons) > 10]
+
+DefaultAssay(seurat_wnn) <- "RNA"
+# Positive
+mod_act_pos <- AddModuleScore(seurat_wnn,
+                              features = positive_regulons,
+                              name = "regulon_")@meta.data
+mod_act_pos <- mod_act_pos[,grep("^regulon_", colnames(mod_act_pos))] %>%
+  setNames(paste0(names(positive_regulons),"(+)"))
+# Negative
+mod_act_neg <- AddModuleScore(seurat_wnn,
+                              features = negative_regulons,
+                              name = "regulon_")@meta.databeach_colscheme <- colorRampPalette(c("#cdcdcd","#edf8b1","#7fcdbb","#41b6c4","#1d91c0","#225ea8","#0c2c84"))
+
+mod_act_neg <- mod_act_neg[,grep("^regulon_", colnames(mod_act_neg))] %>%
+  setNames(paste0(names(negative_regulons),"(-)"))
+
+seurat_wnn[['regulon']] <- CreateAssayObject(data = t(cbind(mod_act_pos, mod_act_neg)))
+```
+
+```{r}
+bluered_colscheme <- colorRampPalette(rev(c("#d73027","#f46d43","#fdae61","#fee090","#e0f3f8","#abd9e9","#74add1","#4575b4")))
+
+DefaultAssay(seurat_wnn) <- "RNA"
+p1 <- FeaturePlot(seurat_wnn,
+                  top_tfs_ct$feature,
+                  reduction = "umap",
+                  cols = beach_colscheme(30),
+                  order = T,
+                  ncol = 6) & NoAxes() & NoLegend()
+
+DefaultAssay(seurat_wnn) <- "regulon"
+p2 <- FeaturePlot(seurat_wnn,
+                  features = c(intersect(paste0(top_tfs_ct$feature,"(+)"), rownames(seurat_wnn)),
+                               intersect(paste0(top_tfs_ct$feature,"(-)"), rownames(seurat_wnn))),
+                  reduction = "umap",
+                  cols = bluered_colscheme(30),
+                  order = T,
+                  ncol = 6) & NoAxes() & NoLegend()
+p1
+p2
+```
+
+```{r}
+saveRDS(seurat_wnn, file="save/seurat_wnn")
+```
+
+# Trajectory Analysis 
+
+```{r}
+seurat_wnn.cds <- as.cell_data_set(seurat_wnn, reduction = 'umap')
+seurat_wnn.cds <- cluster_cells(cds = seurat_wnn.cds, reduction_method = "UMAP")
+seurat_wnn.cds <- learn_graph(seurat_wnn.cds, use_partition = TRUE)
+plot_cells(seurat_wnn.cds, color_cells_by = "celltype", cell_size = 1, group_label_size = 3, label_groups_by_cluster = T, label_leaves = FALSE, label_branch_points = FALSE, graph_label_size = 5)
+# seurat_wnn.cds <- order_cells(seurat_wnn.cds, reduction_method = "UMAP", root_cells = NULL)
+# plot_cells(seurat_wnn.cds, color_cells_by = "pseudotime", cell_size = 0.5, label_groups_by_cluster = FALSE, label_leaves = FALSE, label_branch_points = FALSE, graph_label_size = 4)
+```
+

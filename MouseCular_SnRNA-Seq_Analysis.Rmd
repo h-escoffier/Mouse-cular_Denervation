@@ -43,8 +43,7 @@ library(scran)
 library(presto)
 library(nichenetr)
 library(loomR)
-# Genomes
-library(pals)
+library(chorddiag)
 ```
 
 ### 0.2 Palettes 
@@ -52,7 +51,13 @@ library(pals)
 ```{r}
 vangogh <- c("#003366", "#003399", "#0033CC", "#0066CC", "#0099CC", "#00CCCC", "#33CCCC", "#66CCCC", "#66CC99", "#99CC99", "#CCCC99", "#CCCC66", "#FFCC00", "#FF9900", "#FF6600", "#FF3300", "#CC0033", "#CC0066", "#CC0099", "#CC33FF", "#9933FF", "#6600FF")
 matisse <- c("#D6BCC0", "#FFCD00", "#009BDE", "#FF5733", "#8B1A1A", "#81C784", "#FA8072", "#009688", "#F44336", "#FFA07A", "#3F51B5", "#F9A8D4", "#006400", "#BA55D3", "#6600FF")
+distinct <- c('#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080')
 stepped <- c("#990f26", "#b33e52", "#cc7a88", "#e6b8bf", "#99600f", "#b3823e", "#ccaa7a", "#e6d2b8", "#54990f", "#78b33e", "#a3cc7a", "#cfe6b8", "#0f8299", "#3e9fb3", "#7abecc", "#b8dee6", "#3d0f99", "#653eb3", "#967acc", "#c7b8e6", "#333333", "#666666")
+impress <- c("#f0c8a0","#e0b0ff","#ffbf00","#8b4513","#87ceeb","#ffc0cb","#b0e0e6","#f0e68c","#6b8e23",
+                      # "#dda0dd",
+                      "#ff7f50","#fafad2","#d2b48c","#ff6347",
+                      # "#f5f5dc",
+                      "#e6e6fa","#bdb76b","#b22222","#cd853f","#00ff7f")
 laputa <- c('#403369FF', "#AE93BEFF", "#B4DAE5FF", "#F0D77BFF")
 ```
 
@@ -61,7 +66,7 @@ laputa <- c('#403369FF', "#AE93BEFF", "#B4DAE5FF", "#F0D77BFF")
 ```{r}
 counts <- Read10X(data.dir = "data/WTSO/filtered_feature_bc_matrix")
 # seurat.rna <- CreateSeuratObject(counts$`Gene Expression`, project="D2")
-seurat.rna <- CreateSeuratObject(counts, project="Ctl-Pl")
+seurat.rna <- CreateSeuratObject(counts, project="Ctl-Pltr")
 ```
 
 ## 2. Quality Control 
@@ -140,8 +145,8 @@ One would assume that the first phase of the curve represents the 'real' signal 
 TSNE provides great visualization when cells form distinct cell groups, while UMAP perserves trajectory-like structure better when data contains 'continuum'.
 
 ```{r}
-seurat.rna <- RunTSNE(seurat.rna, dims = 1:25)
-seurat.rna <- RunUMAP(seurat.rna, dims = 1:25)
+seurat.rna <- RunTSNE(seurat.rna, dims = 1:15)
+seurat.rna <- RunUMAP(seurat.rna, dims = 1:15)
 
 TSNEPlot(seurat.rna)
 UMAPPlot(seurat.rna)
@@ -179,13 +184,22 @@ seurat_ctl_pl <- readRDS("save/seurat_ctl_pl")
 
 ```{r}
 seurat.merge <- merge(seurat_ctl, c(seurat_denerv, seurat_d2, seurat_ctl_pl)) %>%
-# seurat.merge <- merge(seurat_ctl, c(seurat_denerv)) %>%
+# seurat.merge <- merge(seurat_ctl_pl, c(seurat_teno)) %>%
   FindVariableFeatures(nfeatures = 3000) %>%
   ScaleData() %>%
   RunPCA(npcs = 50) %>%
   RunUMAP(dims = 1:20)
-DimPlot(seurat.merge, group.by="orig.ident")
-FeaturePlot(seurat.merge, c("Myh1","Myh2","Myh4","Myh7"), ncol=2, pt.size = 0.1)
+
+# Rename 
+seurat.merge$orig.ident[seurat.merge$orig.ident == "Ctl"] <- "Ctl-TA"
+seurat.merge$orig.ident[seurat.merge$orig.ident == "Ctl-Pl"] <- "Ctl-Pltr"
+seurat.merge$orig.ident[seurat.merge$orig.ident == "D2"] <- "D-Pltr"
+seurat.merge$orig.ident[seurat.merge$orig.ident == "Denerv"] <- "D-TA"
+
+DimPlot(seurat.merge, group.by="orig.ident", cols = matisse) & NoAxes()
+ggsave("PLOT/4D_Merge.tiff", device = grDevices::tiff)
+FeaturePlot(seurat.merge, c("Myh1","Myh2","Myh4","Musk"), ncol=2, pt.size = 0.1) & NoAxes()
+ggsave("PLOT/4D_Merge_Expression.tiff", device = grDevices::tiff)
 ```
 
 ### 8.2-A Using Seurat 
@@ -193,7 +207,7 @@ _(https://doi.org/10.1016/j.cell.2019.05.031)_
 
 ```{r}
 seurat_objs <- list(seurat_ctl, seurat_denerv, seurat_d2, seurat_ctl_pl)
-# seurat_objs <- list(DS1 = seurat_ctl, DS2 = seurat_denerv)
+# seurat_objs <- list(seurat_ctl_pl, seurat_teno)
 anchors <- FindIntegrationAnchors(object.list = seurat_objs, dims = 1:30)
 seurat.integrate <- IntegrateData(anchors, dims = 1:30)
 ```
@@ -205,7 +219,7 @@ ElbowPlot(seurat.integrate, ndims = ncol(Embeddings(seurat.integrate, "pca")))
 ```
 
 ```{r}
-seurat.integrate <- RunUMAP(seurat.integrate, dims = 1:25)
+seurat.integrate <- RunUMAP(seurat.integrate, dims = 1:20)
 ```
 
 ```{r}
@@ -220,9 +234,15 @@ _(https://doi.org/10.1038/s41592-019-0619-0)_
 
 ```{r}
 seurat.harm <- merge(seurat_ctl, c(seurat_denerv, seurat_d2, seurat_ctl_pl)) %>%
+# seurat.harm <- merge(seurat_ctl_pl, c(seurat_teno)) %>%
   FindVariableFeatures(nfeatures = 3000) %>%
   ScaleData() %>%
   RunPCA(npcs = 50)
+
+seurat.harm$orig.ident[seurat.harm$orig.ident == "Ctl"] <- "Ctl-TA"
+seurat.harm$orig.ident[seurat.harm$orig.ident == "Ctl-Pl"] <- "Ctl-Pltr"
+seurat.harm$orig.ident[seurat.harm$orig.ident == "D2"] <- "D-Pltr"
+seurat.harm$orig.ident[seurat.harm$orig.ident == "Denerv"] <- "D-TA"
 
 seurat.harm <- RunHarmony(seurat.harm, group.by.vars = "orig.ident", dims.use = 1:25, max.iter.harmony = 50)
 seurat.harm <- RunUMAP(seurat.harm, reduction = "harmony", dims = 1:25)
@@ -230,8 +250,12 @@ seurat.harm <- RunUMAP(seurat.harm, reduction = "harmony", dims = 1:25)
 
 ```{r}
 DefaultAssay(seurat.harm) <- "RNA"
-UMAPPlot(seurat.harm, group.by="orig.ident", cols=matisse)
-FeaturePlot(seurat.harm, c("Myh1","Myh2","Myh4","Myh7"), ncol=2, pt.size = 0.1)
+UMAPPlot(seurat.harm, group.by="orig.ident", cols = matisse) & NoAxes()
+ggsave("PLOT/4D_Int.tiff", device = grDevices::tiff)
+UMAPPlot(seurat.harm, group.by="orig.ident", split.by = "orig.ident", cols=matisse, ncol = 2) & NoAxes()
+ggsave("PLOT/4D_Int_split.tiff", device = grDevices::tiff)
+FeaturePlot(seurat.harm, c("Myh1","Myh2","Myh4","Musk"), ncol=2, pt.size = 0.1) & NoAxes()
+ggsave("PLOT/4D_Int_Expression.tiff", device = grDevices::tiff)
 ```
 
 ```{r}
@@ -249,7 +273,6 @@ seurat.rna$orig.ident[seurat.rna$orig.ident == "Ctl"] <- "Ctl-TA"
 seurat.rna$orig.ident[seurat.rna$orig.ident == "Ctl-Pl"] <- "Ctl-Pltr"
 seurat.rna$orig.ident[seurat.rna$orig.ident == "D2"] <- "D-Pltr"
 seurat.rna$orig.ident[seurat.rna$orig.ident == "Denerv"] <- "D-TA"
-# seurat.rna$orig.ident[seurat.rna$orig.ident == "Tenotomy"] <- "T-Pltr"
 
 # Add type
 seurat.rna$status <- NA 
@@ -257,7 +280,6 @@ seurat.rna$status[seurat.rna$orig.ident == "Ctl-TA"] <- "C"
 seurat.rna$status[seurat.rna$orig.ident == "Ctl-Pltr"] <- "C"
 seurat.rna$status[seurat.rna$orig.ident == "D-Pltr"] <- "D"
 seurat.rna$status[seurat.rna$orig.ident == "D-TA"] <- "D"
-# seurat.rna$status[seurat.rna$orig.ident == "T-Pltr"] <- "T"
 
 # Add muscle
 seurat.rna$muscle <- NA 
@@ -265,29 +287,31 @@ seurat.rna$muscle[seurat.rna$orig.ident == "Ctl-TA"] <- "TA"
 seurat.rna$muscle[seurat.rna$orig.ident == "Ctl-Pltr"] <- "Pltr"
 seurat.rna$muscle[seurat.rna$orig.ident == "D-Pltr"] <- "Pltr"
 seurat.rna$muscle[seurat.rna$orig.ident == "D-TA"] <- "TA"
-# seurat.rna$muscle[seurat.rna$orig.ident == "T-Pltr"] <- "Pltr"
 ```
 
 ```{r}
-# DefaultAssay(seurat.rna) <- "integrated"
+DefaultAssay(seurat.rna) <- "RNA"
 # seurat.rna <- FindNeighbors(seurat.rna, dims = 1:ncol(Embeddings(seurat.rna)))
 seurat.rna <- FindNeighbors(seurat.rna, dims = 1:ncol(Embeddings(seurat.rna)), reduction = "harmony")
 seurat.rna <- FindClusters(seurat.rna, resolution = 0.6)
 
-DimPlot(seurat.rna, reduction = "umap", label = TRUE, cols=stepped)
-DimPlot(seurat.rna, reduction = "umap", group.by="orig.ident", label = FALSE, cols = matisse)
-DimPlot(seurat.rna, reduction = "umap", group.by="status", label = FALSE)
-DimPlot(seurat.rna, reduction = "umap", group.by="muscle", label = FALSE)
+DimPlot(seurat.rna, reduction = "umap", label = TRUE) & NoAxes()
+DimPlot(seurat.rna, reduction = "umap", group.by = "orig.ident", label = FALSE, cols=matisse) & NoAxes()
+UMAPPlot(seurat.rna, group.by="orig.ident", split.by = "orig.ident", cols=matisse, ncol=2)  & NoAxes()
+DimPlot(seurat.rna, reduction = "umap", group.by="status", label = FALSE, cols = c("#1E488F", "#FF6F61")) & NoAxes()
+ggsave("PLOT/4D_Int_Status.tiff", device = grDevices::tiff)
+DimPlot(seurat.rna, reduction = "umap", group.by="muscle", label = FALSE, cols = c("#1E488F", "#FF6F61")) & NoAxes() 
+ggsave("PLOT/4D_Int_Muscle.tiff", device = grDevices::tiff)
 
 ```
 
 ```{r}
 # Clustree 
-# DefaultAssay(seurat.rna) <- "integrated"
-resolution.range <- seq(from = 0, to = 1.2, by = 0.2)
+DefaultAssay(seurat.rna) <- "RNA"
+resolution.range <- seq(from = 0, to = 1, by = 0.2)
 seurat.rna.clustree <- FindClusters(object = seurat.rna, resolution = resolution.range)
 head(seurat.rna.clustree@meta.data)
-clustree(seurat.rna.clustree, prefix = 'RNA_snn_res.')
+clustree(seurat.rna.clustree, prefix = 'RNA_snn_res.0.')
 ```
 
 ## 10. Annotate cells 
@@ -295,30 +319,20 @@ clustree(seurat.rna.clustree, prefix = 'RNA_snn_res.')
 ```{r}
 DefaultAssay(seurat.rna) <- "RNA"
 input_data.markers <- FindAllMarkers(seurat.rna, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
-input_data.markers %>% group_by(cluster) %>% slice_max(n = 20, order_by = avg_log2FC)
-input_data.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_log2FC) -> topX
-```
-
-```{r}
-plot1 <- FeaturePlot(seurat.rna, c("Myh1", "Myh2", "Myh4","Col22a1"), ncol = 2)
-plot2 <- FeaturePlot(seurat.rna, c("Dlc1", "Tshz2", "Myh11","Pde3a"), ncol = 2)
-plot3<- FeaturePlot(seurat.rna, c("Ucp1", "Cidea", "Cidec","Prdm16"), ncol = 2)
-plot4 <- VlnPlot(seurat.rna, features = c("Myh1", "Myh2", "Myh7","Prdm16"), pt.size = 0, ncol = 2)
-
-plot1
-plot2 
-plot3
+input_data.markers %>% group_by(cluster) %>% slice_max(n = 5, order_by = avg_log2FC)
+input_data.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_log2FC) -> topX
+# DoHeatmap(seurat.rna, features = topX$gene, group.colors = stepped, hjust = 0, raster = FALSE, lines.width = 5, size = 3) + NoLegend()
 ```
 
 ```{r}
 new_ident <- setNames(c("IIb",
-                        "U_Myh4",
+                        "Ribo",
                         "IIx_1",
-                        "D_IIb_1",
+                        "D_IIb",
                         "FAPs",
-                        "Mix",
+                        "IIa",
                         "IIx_2",
-                        "D_IIb_2",
+                        "D_IIx",
                         "Macrophage",
                         "SmoothM",
                         "Tenocytes",
@@ -332,18 +346,18 @@ new_ident <- setNames(c("IIb",
                       levels(seurat.rna))
 seurat.rna <- RenameIdents(seurat.rna, new_ident)
 
-DimPlot(seurat.rna, reduction = "umap", label = TRUE, 
+DimPlot(seurat.rna, reduction = "umap", label = TRUE, cols = stepped
         # cols = ghibli_palettes$LaputaMedium
-        ) + NoLegend()
+        ) + NoLegend() + NoAxes()
 
 seurat.rna$celltype <- setNames(rep(c("IIb",
-                                      "U_Myh4",
+                                      "Ribo",
                                       "IIx_1",
-                                      "D_IIb_1",
+                                      "D_IIb",
                                       "FAPs",
-                                      "Mix",
+                                      "IIa",
                                       "IIx_2",
-                                      "D_IIb_2",
+                                      "D_IIx",
                                       "Macrophage",
                                       "SmoothM",
                                       "Tenocytes",
@@ -356,31 +370,47 @@ seurat.rna$celltype <- setNames(rep(c("IIb",
                                       "Adipocytes"), c(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1)), 
                                 c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17))[as.character(seurat.rna$RNA_snn_res.0.6)]
 ```
-
+```{r}
+seurat.rna <- subset(seurat.rna, subset = RNA_snn_res.0.6 %in% c(0,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17))
+```
 
 ```{r}
 seurat.rna$gtype <- factor(setNames(c("IIb",
-                                       "Unclassified",
-                                       "IIx",
-                                       "D_IIb",
-                                       "FAPs",
-                                       "Mix",
-                                       "IIx",
-                                       "D_IIb",
-                                       "Macrophages",
-                                       "SmoothM",
-                                       "Tenocytes",
-                                       "MTJ",
-                                       "Endothelial",
-                                       "MuSC",
-                                       "NMJ",
-                                       "Other",
-                                       "Other",
-                                       "Adipocytes"),
+                                      "IIx",
+                                      "D_IIb",
+                                      "FAPs",
+                                      "IIa",
+                                      "IIx",
+                                      "D_IIx",
+                                      "Macrophages",
+                                      "SmoothM",
+                                      "Tenocytes",
+                                      "MTJ",
+                                      "Endothelial",
+                                      "MuSC",
+                                      "NMJ",
+                                      "Other",
+                                      "Other",
+                                      "Adipocytes"),
                                  levels(seurat.rna@active.ident))[seurat.rna@active.ident],
-                        levels=c("IIx","Mix", "IIb", "D_IIb", "MTJ", "NMJ", "FAPs", "Macrophages","SmoothM", "Tenocytes", "Endothelial", "MuSC", "Adipocytes", "Other", "Unclassified"))
+                        levels=c("IIx","IIa", "IIb", "D_IIb", "D_IIx", "MTJ", "NMJ", "FAPs", "Macrophages","SmoothM", "Tenocytes", "Endothelial", "MuSC", "Adipocytes", "Other"))
+DimPlot(seurat.rna, reduction = "umap", group.by = "gtype", cols = stepped, label = T) & NoAxes()
+ggsave("PLOT/4D_Int_gtype.tiff", device = grDevices::tiff)
+```
 
-DimPlot(seurat.rna, reduction = "umap", group.by = "gtype", cols = matisse) & NoAxes()
+```{r}
+FeaturePlot(seurat.rna, c("Ttn", "Myh1", "Myh2","Myh9"), ncol = 2)
+FeaturePlot(seurat.rna, c("Cntfr", "Agbl1", "Kcnn2","Lmcd1"), ncol = 2)
+FeaturePlot(seurat.rna, c("Myh2"))
+FeaturePlot(seurat.rna, c("Enah", "Hectd2os", "Actn2","Ldlrad3"), ncol = 2)
+VlnPlot(seurat.rna, features = c("Stxbp4", "Aldh1a1", "Cep85l","Ppara"), pt.size = 0, ncol = 2)
+FeaturePlot(seurat.rna, features = c("Myh1", "Myh2"), blend = TRUE, ncol = 2)
+FeatureScatter(seurat.rna, feature1 = "Myh1", feature2 = "Myh2", slot = "counts", group.by = "muscle", cols = matisse, pt.size = 0.2)
+ggsave("PLOT/4D_Int_Scatter_12.tiff", device = grDevices::tiff)
+FeatureScatter(seurat.rna, feature1 = "Myh4", feature2 = "Myh1", slot = "counts", group.by = "muscle", cols = matisse, pt.size = 0.2)
+ggsave("PLOT/4D_Int_Scatter_41.tiff", device = grDevices::tiff)
+FeatureScatter(seurat.rna, feature1 = "Myh4", feature2 = "Myh2", slot = "counts", group.by = "muscle", cols = matisse, pt.size = 0.2)
+ggsave("PLOT/4D_Int_Scatter_42.tiff", device = grDevices::tiff)
 ```
 
 ## 11. Composition
@@ -393,15 +423,13 @@ freq <- table(seurat.rna$gtype, seurat.rna$status)
 prop <- apply(freq,2,function(x) x/sum(x))
 
 layout(matrix(1:3,nrow=1)); par(mar=c(8,5,1,1))
-
-barplot(freq, col=colors <- matisse,
+barplot(freq, col=colors <- stepped,
         border=NA, las=2, ylab="Frequency", cex.names = 0.8)
-barplot(prop, col=colors <- matisse,
+barplot(prop, col=colors <- stepped,
         border=NA, las=2, ylab="Proportion", cex.names = 0.8)
 plot.new()
-legend("left", fill=matisse, legend=rownames(freq), bty="n")
-
-
+legend("left", fill=stepped, legend=rownames(freq), bty="n")
+ggsave("PLOT/4D_Comp_muscle.tiff", device = grDevices::tiff)
 ```
 
 ### 11.2-A Composition Comparaison using Fisher  
@@ -479,7 +507,7 @@ legend("left", fill = c("#cdcdcd","#303030"), legend = c("C","D"), bty="n")
 Compare the general transcriptome similarities of the same cell type/state in different samples or conditions in order to get general information whether there exists any substantial transcriptomic changes in this cell type/state between conditions.
 
 ```{r}
-seurat_transcriptome <- subset(seurat.rna, subset = gtype == "IIx") %>%
+seurat_transcriptome <- subset(seurat.rna, subset = gtype == "IIa") %>%
   FindVariableFeatures()
 avg_expr_org <- sapply(sort(unique(seurat.rna$orig.ident)), function(org)
   rowMeans(seurat_transcriptome@assays$RNA@data[,which(seurat_transcriptome$orig.ident == org)]))
@@ -494,9 +522,10 @@ DE_wilcoxauc_transcriptome <- wilcoxauc(seurat_transcriptome, group_by = "status
   dplyr::filter(group == "D") %>%
   mutate(DE = abs(logFC)>log(1.1) & padj < 0.01) %>%
   mutate(DEG = ifelse(abs(logFC)>log(1.1) & padj < 0.01, feature, NA))
-```
 
-```{r}
+DE_wilcoxauc_transcriptome
+write.csv(DE_wilcoxauc_transcriptome, "IPA/wilcox_IIx.csv", row.names=FALSE)
+
 ggplot(DE_wilcoxauc_transcriptome, aes(x = logFC, y = -log10(padj), col=DE, label=DEG)) +
   geom_point() +
   geom_text_repel() +
@@ -505,6 +534,7 @@ ggplot(DE_wilcoxauc_transcriptome, aes(x = logFC, y = -log10(padj), col=DE, labe
   scale_color_manual(values=c("#909090", "red")) +
   theme_minimal()
 ```
+
 ### 12.3 DESeq2 for DE 
 
 ```{r}
@@ -520,6 +550,10 @@ DE_deseq2_transcriptome <- results(dds) %>% as.data.frame() %>%
   tibble::rownames_to_column("gene") %>%
   mutate(DE = abs(log2FoldChange)>log2(1.1) & padj < 0.01) %>%
   mutate(DEG = ifelse(abs(log2FoldChange)>log2(1.1) & padj < 0.01, gene, NA))
+
+DE_deseq2_transcriptome
+write.csv(DE_deseq2_transcriptome, "IPA/DESeq_IIx.csv", row.names=FALSE)
+
 
 ggplot(DE_deseq2_transcriptome, aes(x = log2FoldChange, y = -log10(padj), col=DE, label=DEG)) +
   geom_point() +
@@ -573,6 +607,12 @@ DE_aov_bin <- data.frame(gene = names(which(det_rate > 0.05)), DE_aov_bin) %>%
   mutate(DE = padj < 0.01) %>%
   mutate(DEG = ifelse(padj < 0.01, gene, NA))
 
+DE_aov
+write.csv(DE_aov, "IPA/GLM_IIx.csv", row.names=FALSE)
+DE_aov_bin
+write.csv(DE_aov_bin, "IPA/GLMbin_IIx.csv", row.names=FALSE)
+
+
 ggplot(DE_aov, aes(x = condD, y = -log10(padj), col=DE, label=DEG)) +
   geom_point() +
   geom_text_repel(max.overlaps = 20) +
@@ -588,6 +628,26 @@ ggplot(DE_aov_bin, aes(x = condD, y = -log10(padj), col=DE, label=DEG)) +
   geom_hline(yintercept=-log10(0.01), col="#303030", linetype="dotted") +
   scale_color_manual(values=c("#909090", "red")) +
   theme_minimal()
+```
+### 12.4 FindMarkers for DE 
+
+```{r}
+cluster.markers <- FindMarkers(seurat.rna, ident.1 = 'C', group.by = "status", subset.ident = "IIa", min.pct = 0.25, logfc.threshold = 0.25, only.pos = F)
+write.csv(cluster.markers, "IPA/FM_IIa_vs_TIIa_oP_F.csv", row.names = TRUE)
+cluster.markers <- FindMarkers(seurat.rna, ident.1 = 'C', group.by = "status", subset.ident = c("IIb_1", "IIb_2", "IIb_3"), min.pct = 0.25, logfc.threshold = 0.25, only.pos = F)
+write.csv(cluster.markers, "IPA/FM_IIb_vs_TIIb_oP_F.csv", row.names = TRUE)
+cluster.markers <- FindMarkers(seurat.rna, ident.1 = 'C', group.by = "status", subset.ident = "IIx", min.pct = 0.25, logfc.threshold = 0.25, only.pos = F)
+write.csv(cluster.markers, "IPA/FM_IIx_vs_TIIx_oP_F.csv", row.names = TRUE)
+
+# write.csv(cluster.markers, "IPA/FM_Mix_vs_DMix_oP_T.csv", row.names = TRUE)
+# cluster.markers <- FindMarkers(seurat.rna, ident.1 = 'IIb', ident.2 = "D_IIb", min.pct = 0.25, logfc.threshold = 0.25, only.pos = F)
+# write.csv(cluster.markers, "IPA/FM_IIb_vs_DIIb_oP_F.csv", row.names = TRUE)
+# cluster.markers <- FindMarkers(seurat.rna, ident.1 = 'IIb', ident.2 = "D_IIb", min.pct = 0.25, logfc.threshold = 0.25, only.pos = T)
+# write.csv(cluster.markers, "IPA/FM_IIb_vs_DIIb_oP_T.csv", row.names = TRUE)
+# cluster.markers <- FindMarkers(seurat.rna, ident.1 = c('IIx_1', 'IIx_2'), ident.2 = "D_IIx", min.pct = 0.25, logfc.threshold = 0.25, only.pos = F)
+# write.csv(cluster.markers, "IPA/FM_IIx_vs_DIIx_oP_F.csv", row.names = TRUE)
+# cluster.markers <- FindMarkers(seurat.rna, ident.1 = c('IIx_1', 'IIx_2'), ident.2 = "D_IIx", min.pct = 0.25, logfc.threshold = 0.25, only.pos = T)
+# write.csv(cluster.markers, "IPA/FM_IIx_vs_DIIx_oP_T.csv", row.names = TRUE)
 ```
 
 ## 13. Trajectory Analysis 
@@ -616,7 +676,7 @@ adata <- AnnData(X = t(seurat.rna[['RNA']]@data),
                  obsm = list(pca = Embeddings(seurat.rna,"pca")[,1:20],
                              umap = Embeddings(seurat.rna,"umap"))
                 )
-adata$write_h5ad("save/anndata_rna.h5ad")
+adata$write_h5ad("save/anndata_rna_final.h5ad")
 ```
 
 ```{r}
@@ -628,11 +688,11 @@ sc <- import("scanpy")
 ```
 
 ```{r}
-adata.rna <- sc$read("save/anndata_rna.h5ad") 
+adata.rna <- sc$read("save/anndata_rna_final.h5ad") 
 # or adata_DS1 <- sc$read_loom("save/loom_rna.loom") 
 sc$pp$neighbors(adata.rna, n_neighbors=20L, use_rep='pca')
 sc$tl$paga(adata.rna, groups='celltype')
-adata.rna$write_h5ad("save/anndata_rna.h5ad")
+adata.rna$write_h5ad("save/anndata_rna_final.h5ad")
 ```
 
 ```{r}
@@ -664,16 +724,22 @@ seurat.type <- RunPCA(seurat.type)
 seurat.type <- RunHarmony(seurat.type, group.by.vars = "orig.ident", dims.use = 1:25, max.iter.harmony = 50)
 seurat.type <- RunUMAP(seurat.type, reduction = "harmony", dims = 1:25)
 seurat.type <- FindNeighbors(seurat.type, dims = 1:ncol(Embeddings(seurat.rna)), reduction = "harmony")
-seurat.type <- FindClusters(seurat.type, resolution = 0.6)
-DimPlot(seurat.type, reduction = "umap", group.by = "orig.ident") & NoAxes()
-DimPlot(seurat.type, reduction = "umap", group.by = "status") & NoAxes()
+seurat.type <- FindClusters(seurat.type, resolution = 0.8, algorithm = 2)
+DimPlot(seurat.type, reduction = "umap", group.by = "orig.ident", cols = matisse) & NoAxes()
+DimPlot(seurat.type, reduction = "umap", group.by = "status", cols = c("#FFA07A", "#3F51B5")) & NoAxes()
 DimPlot(seurat.type, reduction = "umap") & NoAxes()
 
 DefaultAssay(seurat.type) <- "RNA"
 input_data.markers <- FindAllMarkers(seurat.type, min.pct = 0.25, logfc.threshold = 0.25, only.pos = TRUE)
 input_data.markers %>% group_by(cluster) %>% slice_max(n = 20, order_by = avg_log2FC)
 input_data.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_log2FC) -> topX
+input_data.markers
 FeaturePlot(seurat.type, c("Myh2", "Myh4", "Runx1", "Dlg2"), ncol = 2)
+```
+```{r}
+FeaturePlot(seurat.type, c("Myh2", "Myh4", "Runx1", "Uty"), ncol = 2) & NoAxes()
+FeaturePlot(seurat.type, c("Myh1", "Myh7", "Myh9", "Gm26917"), ncol = 2) & NoAxes()
+FeaturePlot(seurat.type, c("Mast4", "Cd36", "Actn2", "Xist"), ncol = 2) & NoAxes()
 ```
 
 ```{r}
@@ -684,6 +750,7 @@ FeaturePlot(seurat.type, c("dpt", "Myh4", "Runx1", "Dlg2"), ncol=2)
 ```
 
 Visualize expression changes along the constructed pseudotime
+
 ```{r}
 plot1 <- qplot(seurat.type$dpt, as.numeric(seurat.type@assays$RNA@data["Myh4",]),
                xlab="Dpt", ylab="Expression", main="Myh4") +
@@ -707,7 +774,7 @@ seurat.rna.cds <- cluster_cells(cds = seurat.rna.cds, reduction_method = "UMAP")
 seurat.rna.cds <- learn_graph(seurat.rna.cds, use_partition = TRUE)
 seurat.rna.cds <- order_cells(seurat.rna.cds, reduction_method = "UMAP", root_cells = NULL)
 
-plot_cells(seurat.rna.cds, color_cells_by = "status", cell_size = 1, group_label_size = 3, label_groups_by_cluster = F, label_leaves = FALSE, label_branch_points = FALSE, graph_label_size = 5)
+plot_cells(seurat.rna.cds, color_cells_by = "status", cell_size = 0.5, group_label_size = 3, label_groups_by_cluster = F, label_leaves = FALSE, label_branch_points = FALSE, graph_label_size = 5)
 plot_cells(seurat.rna.cds, color_cells_by = "gtype", cell_size = 0.5, label_groups_by_cluster = FALSE, label_leaves = FALSE, label_branch_points = FALSE, graph_label_size = 4)
 
 rowData(seurat.rna.cds)$gene_name <- rownames(seurat.rna.cds)
@@ -736,118 +803,72 @@ plot_genes_in_pseudotime(subset.cds.genes,
 
 ## 14. NicheNet analysis 
 
+_WIP_
+
+```{r}
+seurat.rna <- readRDS("save/GSE183802_snRNA-seq_data_CTL_and_denervation.rds")
+seurat.rna$celltype <- Idents(seurat.rna)
+# TypeI TypeIIA TypeIIx TypeIIB MTJ NMJ Satellite FAPs Pericyte Adipocyte Endothelial Macrophage Unclassified
+```
+
 ```{r}
 ligand_target_matrix = readRDS(url("https://zenodo.org/record/3260758/files/ligand_target_matrix.rds"))
 lr_network = readRDS(url("https://zenodo.org/record/3260758/files/lr_network.rds"))
 weighted_networks = readRDS(url("https://zenodo.org/record/3260758/files/weighted_networks.rds"))
+weighted_networks_lr = weighted_networks$lr_sig %>% inner_join(lr_network %>% distinct(from,to), by = c("from","to"))
+
+lr_network = lr_network %>% mutate(from = convert_human_to_mouse_symbols(from), to = convert_human_to_mouse_symbols(to)) %>% drop_na()
+colnames(ligand_target_matrix) = ligand_target_matrix %>% colnames() %>% convert_human_to_mouse_symbols()
+rownames(ligand_target_matrix) = ligand_target_matrix %>% rownames() %>% convert_human_to_mouse_symbols()
+
+ligand_target_matrix = ligand_target_matrix %>% .[!is.na(rownames(ligand_target_matrix)), !is.na(colnames(ligand_target_matrix))]
+
+weighted_networks_lr = weighted_networks_lr %>% mutate(from = convert_human_to_mouse_symbols(from), to = convert_human_to_mouse_symbols(to)) %>% drop_na()
 ```
 
 ```{r}
-nichenet_output = nichenet_seuratobj_aggregate(
-  seurat_obj = seurat.rna, 
-  receiver = "D_IIb_1", 
-  condition_colname = "status", condition_oi = "D", condition_reference = "C", 
-  sender = c("IIb","IIx_1","FAPs","Mix","IIx_2","D_IIb_2","MTJ","NMJ"), 
-  ligand_target_matrix = ligand_target_matrix, lr_network = lr_network, weighted_networks = weighted_networks, organism = "mouse",
-  assay_oi = "RNA")
-```
-```{r}
-nichenet_output$ligand_activities
-nichenet_output$top_ligands
-nichenet_output$ligand_expression_dotplot
-nichenet_output$ligand_differential_expression_heatmap
-nichenet_output$ligand_target_heatmap
-nichenet_output$ligand_target_matrix %>% .[1:10,1:6]
-nichenet_output$ligand_target_df # weight column = regulatory potential
-nichenet_output$top_targets
-nichenet_output$ligand_activity_target_heatmap
-nichenet_output$ligand_receptor_heatmap
+receiver = "TypeIIA"
+expressed_genes_receiver = get_expressed_genes(receiver, seurat.rna, pct = 0.10, assay_oi = "RNA")
+background_expressed_genes = expressed_genes_receiver %>% .[. %in% rownames(ligand_target_matrix)]
+sender_celltypes = "TypeIIB"
+list_expressed_genes_sender = sender_celltypes %>% unique() %>% lapply(get_expressed_genes, seurat.rna, 0.10, assay_oi = "RNA") # lapply to get the expressed genes of every sender cell type separately here
+expressed_genes_sender = list_expressed_genes_sender %>% unlist() %>% unique()
 ```
 
 ```{r}
-avg_expression_ligands = AverageExpression(seurat.rna, features = nichenet_output$top_ligands)
-sender_ligand_assignment = avg_expression_ligands$RNA %>% apply(1, function(ligand_expression){
-  ligand_expression > (ligand_expression %>% mean() + ligand_expression %>% sd())
-  }) %>% t()
-sender_ligand_assignment = sender_ligand_assignment %>% apply(2, function(x){x[x == TRUE]}) %>% purrr::keep(function(x){length(x) > 0})
-names(sender_ligand_assignment)
+seurat_obj_receiver= subset(seurat.rna, idents = receiver)
+seurat_obj_receiver = SetIdent(seurat_obj_receiver, value = seurat_obj_receiver[["sti"]])
+condition_oi = "N"
+condition_reference = "C" 
+DE_table_receiver = FindMarkers(object = seurat_obj_receiver, ident.1 = condition_oi, ident.2 = condition_reference, min.pct = 0.10) %>% rownames_to_column("gene")
+geneset_oi = DE_table_receiver %>% filter(p_val_adj <= 0.05 & abs(avg_log2FC) >= 0.25) %>% pull(gene)
+geneset_oi = geneset_oi %>% .[. %in% rownames(ligand_target_matrix)]
 ```
 
 ```{r}
-all_assigned_ligands = sender_ligand_assignment %>% lapply(function(x){names(x)}) %>% unlist()
-unique_ligands = all_assigned_ligands %>% table() %>% .[. == 1] %>% names()
-general_ligands = nichenet_output$top_ligands %>% setdiff(unique_ligands)
-
-ligand_type_indication_df = tibble(
-  ligand_type = c(rep("General", times = general_ligands %>% length())),
-  ligand = c(general_ligands))
+ligands = lr_network %>% pull(from) %>% unique()
+receptors = lr_network %>% pull(to) %>% unique()
+expressed_ligands = intersect(ligands,expressed_genes_sender)
+expressed_receptors = intersect(receptors,expressed_genes_receiver)
+potential_ligands = lr_network %>% filter(from %in% expressed_ligands & to %in% expressed_receptors) %>% pull(from) %>% unique()
 ```
 
 ```{r}
-active_ligand_target_links_df = nichenet_output$ligand_target_df %>% mutate(target_type = "test") %>% inner_join(ligand_type_indication_df) 
-
-cutoff_include_all_ligands = active_ligand_target_links_df$weight %>% quantile(0.40)
-active_ligand_target_links_df_circos = active_ligand_target_links_df %>% filter(weight > cutoff_include_all_ligands)
-
-ligands_to_remove = setdiff(active_ligand_target_links_df$ligand %>% unique(), active_ligand_target_links_df_circos$ligand %>% unique())
-targets_to_remove = setdiff(active_ligand_target_links_df$target %>% unique(), active_ligand_target_links_df_circos$target %>% unique())
-  
-circos_links = active_ligand_target_links_df %>% filter(!target %in% targets_to_remove &!ligand %in% ligands_to_remove)
+ligand_activities = predict_ligand_activities(geneset = geneset_oi, background_expressed_genes = background_expressed_genes, ligand_target_matrix = ligand_target_matrix, potential_ligands = potential_ligands)
+ligand_activities = ligand_activities %>% arrange(-pearson) %>% mutate(rank = rank(desc(pearson)))
+ligand_activities
 ```
 
 ```{r}
-grid_col_ligand =c("General" = "lawngreen")
-grid_col_target =c("test" = "tomato")
-
-grid_col_tbl_ligand = tibble(ligand_type = grid_col_ligand %>% names(), color_ligand_type = grid_col_ligand)
-grid_col_tbl_target = tibble(target_type = grid_col_target %>% names(), color_target_type = grid_col_target)
-
-circos_links = circos_links %>% mutate(ligand = paste(ligand," "))
-circos_links = circos_links %>% inner_join(grid_col_tbl_ligand) %>% inner_join(grid_col_tbl_target)
-links_circle = circos_links %>% dplyr::select(ligand,target, weight)
-
-ligand_color = circos_links %>% distinct(ligand,color_ligand_type)
-grid_ligand_color = ligand_color$color_ligand_type %>% set_names(ligand_color$ligand)
-target_color = circos_links %>% distinct(target,color_target_type)
-grid_target_color = target_color$color_target_type %>% set_names(target_color$target)
-
-grid_col =c(grid_ligand_color,grid_target_color)
-
-transparency = circos_links %>% mutate(weight =(weight-min(weight))/(max(weight)-min(weight))) %>% mutate(transparency = 1-weight) %>% .$transparency 
+best_upstream_ligands = ligand_activities %>% top_n(20, pearson) %>% arrange(-pearson) %>% pull(test_ligand) %>% unique()
+active_ligand_target_links_df = best_upstream_ligands %>% lapply(get_weighted_ligand_target_links,geneset = geneset_oi, ligand_target_matrix = ligand_target_matrix, n = 200) %>% bind_rows() %>% drop_na()
+active_ligand_target_links = prepare_ligand_target_visualization(ligand_target_df = active_ligand_target_links_df, ligand_target_matrix = ligand_target_matrix, cutoff = 0.33)
+order_ligands = intersect(best_upstream_ligands, colnames(active_ligand_target_links)) %>% rev() %>% make.names()
+order_targets = active_ligand_target_links_df$target %>% unique() %>% intersect(rownames(active_ligand_target_links)) %>% make.names()
+rownames(active_ligand_target_links) = rownames(active_ligand_target_links) %>% make.names() # make.names() for heatmap visualization of genes like H2-T23
+colnames(active_ligand_target_links) = colnames(active_ligand_target_links) %>% make.names() # make.names() for heatmap visualization of genes like H2-T23
+vis_ligand_target = active_ligand_target_links[order_targets,order_ligands] %>% t()
+p_ligand_target_network = vis_ligand_target %>% make_heatmap_ggplot("Prioritized ligands","Predicted target genes", color = "purple",legend_position = "top", x_axis_position = "top",legend_title = "Regulatory potential")  + theme(axis.text.x = element_text(face = "italic")) + scale_fill_gradient2(low = "whitesmoke",  high = "purple", breaks = c(0,0.0045,0.0090))
 ```
 
-```{r}
-target_order = circos_links$target %>% unique()
-ligand_order = c(general_ligands) %>% c(paste(.," ")) %>% intersect(circos_links$ligand)
-order = c(ligand_order,target_order)
-```
 
-```{r}
-width_same_cell_same_ligand_type = 0.5
-width_different_cell = 6
-width_ligand_target = 15
-width_same_cell_same_target_type = 0.5
-
-circos_links %>% filter(target_type == "General")
-circos_links %>% filter(target_type == "test")
-
-gaps = c(rep(width_same_cell_same_ligand_type, times = (circos_links %>% filter(ligand_type == "General") %>% distinct(ligand) %>% nrow() -1)),
-  width_ligand_target,
-  rep(width_same_cell_same_target_type, times = (circos_links %>% filter(target_type == "test") %>% distinct(target) %>% nrow() -1)),
-  width_ligand_target
-  )
-```
-
-```{r}
-circos.par(gap.degree = gaps)
-chordDiagram(links_circle, directional = 1,
-             # order=order,
-             link.sort = TRUE, link.decreasing = FALSE, grid.col = grid_col,transparency = transparency, diffHeight = 0.005, direction.type = c("diffHeight", "arrows"),link.arr.type = "big.arrow", link.visible = links_circle$weight >= cutoff_include_all_ligands,annotationTrack = "grid", 
-    preAllocateTracks = list(track.height = 0.075))
-
-circos.track(track.index = 1, panel.fun = function(x, y) {
-    circos.text(CELL_META$xcenter, CELL_META$ylim[1], CELL_META$sector.index,
-        facing = "clockwise", niceFacing = TRUE, adj = c(0, 0.55), cex = 1)
-  }, bg.border = NA)
-circos.clear()
-```

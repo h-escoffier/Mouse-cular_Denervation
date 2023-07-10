@@ -61,7 +61,7 @@ seurat_palette <- c('#E77E72', '#D98A36', '#C59833', '#A9A334', '#87AD33', '#73B
 ## 1. Create Seurat Object 
 
 ```{r}
-counts <- Read10X(data.dir = "data/Ctl-D/outs/filtered_feature_bc_matrix")
+counts <- Read10X(data.dir = "data/Ctl-D/outs/filtered_feature_bc_matrix") # Read10X() function read in the matrix and rename its row names and col names by gene symbols and cell barcodes, respectively.
 seurat.rna <- CreateSeuratObject(counts$`Gene Expression`, project="D2") # if snRNA & snATAC-Seq data
 # seurat.rna <- CreateSeuratObject(counts, project="D2") # if snRNA-Seq data 
 ```
@@ -77,6 +77,8 @@ We filter :
 * Cells with too few genes detected. _(representing cells which are not sequenced deep enough)_
 * Cells with too many genes detected. _(corresponding to multiplets)_
 * Cells with high mitochondrial transcript percentage.
+
+/!\ There is no one-size-fits-all filtering criteria, as the normal ranges of these metrics can vary dramatically from one experiment to another, depending on sample origin as well as reagents and sequencing depths. 
 
 ```{r}
 # Add mitochondrial transcript percentage
@@ -101,6 +103,9 @@ seurat.rna <- NormalizeData(seurat.rna)
 ```
 
 ## 4. Feature selection
+Single-cell analysis has a major advantage over bulk RNA-seq in its ability to explore cellular heterogeneity and identify distinct cell groups. However, proper feature selection is necessary as genes with low expression levels or similar expression across all cells may dilute differences between cell groups.
+
+In Seurat, or more general in scRNA-seq data analysis, this step usually refers to the identification of highly variable features/genes, which are genes with the most varied expression levels across cells.
 Identification of highly variable features/genes, which are genes with the most varied expression levels across cells.
 
 ```{r}
@@ -125,6 +130,13 @@ seurat.rna <- ScaleData(seurat.rna, vars.to.regress = c("nFeature_RNA", "percent
 
 ## 3-5. SCTransform 
 Steps 3 to 5 can be replaced by a `SCTransform` step
+
+Pros: 
+- SCT resolve the introduction of the zero-inflation artifact using a regularized negative binomial regression model to normalize scRNA-seq data.
+Cons: 
+- Slow
+- The normalized expression measurements is data-dependent. Indeed, in SCT, information from the other cells in the same data set is involved during normalization. This potentially introduces problems when multiple data sets need to be compared. 
+- SCT involve random sampling to speed up the computation. Thus the result is slightly different every time, even if it is applied to the same data set.
 
 ```{r}
 seurat.rna <- SCTransform(seurat.rna,
@@ -186,6 +198,8 @@ seurat_ctl_pl <- readRDS("save/seurat_ctl_pl")
 
 ### 8.1 Merge
 
+The batch effect may be small, so no integration is necessary. As a result, data sets can be examined first by simply merging them.
+
 ```{r}
 seurat.merge <- merge(seurat_ctl, c(seurat_denerv, seurat_d2, seurat_ctl_pl)) %>%
 # seurat.merge <- merge(seurat_ctl_pl, c(seurat_teno)) %>%
@@ -206,7 +220,11 @@ FeaturePlot(seurat.merge, c("Myh1","Myh2","Myh4","Musk"), ncol=2, pt.size = 0.1)
 
 ### 8.2-A Using Seurat 
 _(https://doi.org/10.1016/j.cell.2019.05.031)_
-/!\ Seurat's integration create a new assay 
+
+Running the IntegrateData() function creates a new assay called `integrated`, where the batch-corrected expression matrix is stored. The uncorrected values are store in the `RNA` assay). 
+The default assay of the resulted Seurat object is automatically set to `integrated`, but you can switch to the other one by using `DefaultAssay(seurat.rna) <- "RNA"`.
+
+Then the UMAP embedding and clustering should be done with the `integrated` assay but the corrected values are no longer very reliable as the quantitative measure of gene expression. Thus, it is recommended that for the other analysis such as cluster marker identification and visualization, to use the uncorrected expression values instead using the `RNA` assay
 
 ```{r}
 seurat_objs <- list(seurat_ctl, seurat_denerv, seurat_d2, seurat_ctl_pl) # Add every datasets 
@@ -230,8 +248,8 @@ UMAPPlot(seurat.integrate, group.by="orig.ident")
 FeaturePlot(seurat.integrate, c("Myh1","Myh2","Myh4","Col22a1"), ncol=2)
 ```
 
-### 8.2-B Using Harmony 
-_(https://doi.org/10.1038/s41592-019-0619-0)_
+### 8.2-B Using Harmony (RECOMMENDED)
+Harmony uses fuzzy clustering to assign each cell to multiple groups. For each cluster, a correction factor is calculated for each data set to bring the centroid of the cluster closer to the global centroid. Since each cell is represented as a combination of multiple clusters, a cell-specific correction factor is determined by averaging the correction factors of the clusters to which the cell belongs, weighted by the cluster assignment ratio. This iterative process continues until convergence is achieved or iteration limits are reached. _(https://doi.org/10.1038/s41592-019-0619-0)_
 
 ```{r}
 seurat.harm <- merge(seurat_ctl, c(seurat_denerv, seurat_d2, seurat_ctl_pl)) %>%
@@ -255,6 +273,8 @@ saveRDS(seurat.integrate, file="save/seurat_4integrate")
 ```
 
 ## 9. Clustering 
+
+Each dataset is renamed, and then grouped under different categories, here according to muscle or status (healthy or denervated).
 
 ```{r}
 # seurat.rna <- seurat.integrate # if integrate with seurat
@@ -284,10 +304,18 @@ seurat.rna$muscle[seurat.rna$orig.ident == "D-Pltr"] <- "Pltr"
 seurat.rna$muscle[seurat.rna$orig.ident == "D-TA"] <- "TA"
 ```
 
+It is then necessary to identify groups of cells in an unbiased way via clustering. 
+A network of cells with k nearest neighbors is generated. Each cell is first connected to the cells with the shortest distances, based on their corresponding PC values. Only cell pairs that are neighbors of each other are considered connected. The proportion of shared neighbors between each pair of cells is then calculated and used to describe the strength of the connection between two cells. Weak connections are eliminated. The result is the network of shared nearest neighbors (SNN).
+
+Next, Louvain's community identification algorithm is applied to the network to search for communities in the network, i.e. groups of cells that cells in the same group tend to connect to each other, while connections between cells in different groups are few. (The Leiden algorithm seems to perform better and faster according to the latest literature benchmarks)
+
 ```{r}
 seurat.rna <- FindNeighbors(seurat.rna, dims = 1:ncol(Embeddings(seurat.rna)), reduction = "harmony")
-seurat.rna <- FindClusters(seurat.rna, resolution = 0.6, algorithm = 1) # algorithm = 1 -> Lauvain / 4 -> Leiden
+seurat.rna <- FindClusters(seurat.rna, resolution = 0.3, algorithm = 1) # algorithm = 1 -> Lauvain / 4 -> Leiden
 ```
+
+A step with Clustree can be added to know the decomposition of each cluster according to the resolution in order to choose the resolution.
+The aim is to choose a resolution that is relatively stable and consistent with the number of cell populations expected in the data set. 
 
 ```{r}
 # Clustree 
@@ -303,7 +331,7 @@ DimPlot(seurat.rna, reduction = "umap", label = TRUE) & NoAxes() # Normal
 DimPlot(seurat.rna, reduction = "umap", group.by = "orig.ident", label = FALSE, cols=matisse) & NoAxes() 
 UMAPPlot(seurat.rna, group.by="orig.ident", split.by = "orig.ident", cols=matisse, ncol=2)  & NoAxes()
 DimPlot(seurat.rna, reduction = "umap", group.by = "status", split.by ="status", label = FALSE) & NoAxes() 
-DimPlot(seurat.rna, reduction = "umap", group.by="muscle", label = FALSE, cols = c("#1E488F", "#FF6F61")) & NoAxes() 
+DimPlot(seurat.rna, reduction = "umap", group.by="status", label = FALSE, cols = c("#1E488F", "#FF6F61")) & NoAxes() 
 
 # Expression Plot 
 FeaturePlot(seurat.rna, c("Tenm2", "Gpc6", "Bnc2","Ebf2"), ncol = 2) & NoAxes() & NoLegend()
@@ -397,6 +425,8 @@ seurat.rna$celltype <- setNames(rep(c("IIb",
                                 c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17))[as.character(seurat.rna$RNA_snn_res.0.6)]
 ```
 
+Add a `gtype` category for 'general type', grouping each cell type into its own cluster 
+
 ```{r}
 # Annotation per 'Group' 
 seurat.rna$gtype <- factor(setNames(c("IIb",
@@ -422,6 +452,8 @@ seurat.rna$gtype <- factor(setNames(c("IIb",
 
 DimPlot(seurat.rna, reduction = "umap", group.by = "gtype", cols = seurat_palette, label = T) & NoAxes()
 ```
+
+Add a `gtype_muscular` category to group all non-muscle cell types into a single cluster (Non-Muscular)
 
 ```{r}
 # Annotation Muscular/Non muscular
@@ -493,7 +525,7 @@ freq_fisher <- function(conditions, have_identity){
 
 region_enrichment <- data.frame(region = levels(seurat.rna$gtype),
                                 t(sapply(levels(seurat.rna$gtype), function(gtype)
-                                  freq_fisher(conditions = factor(seurat.rna$status, levels=c("C","D")),
+                                  freq_fisher(conditions = factor(seurat.rna$status, levels=c("Control","Denervated")),
                                               have_identity = seurat.rna$gtype == gtype)
                                   )),
                                 row.names=NULL)
@@ -518,7 +550,7 @@ freq_glm_aov <- function(samples, conditions, have_identity){
 region_enrichment <- data.frame(region_enrichment,
                                 t(sapply(levels(seurat.rna$gtype), function(gtype){
                                 freq_glm_aov(samples = seurat.rna$orig.ident,
-                                             conditions = factor(seurat.rna$status, levels=c("C","D")),
+                                             conditions = factor(seurat.rna$status, levels=c("Control","Denervated")),
                                              seurat.rna$gtype == seurat.rna$celltype)
                                   })),
                                 row.names=NULL)
@@ -546,7 +578,7 @@ for(gtype in c("IIx","IIa", "IIb", "D_IIb", "D_IIx", "NMJ", "FAPs", "Other", "Un
   }
 
 plot.new()
-legend("left", fill = c("#cdcdcd","#303030"), legend = c("C","D"), bty="n")
+legend("left", fill = c("#cdcdcd","#303030"), legend = c("Control","Denervated"), bty="n")
 ```
 
 ```{r}
@@ -588,7 +620,7 @@ Possibility of using Seurat's FindMarker() function for identical results
 
 ```{r}
 DE_wilcoxauc_transcriptome <- wilcoxauc(seurat_transcriptome, group_by = "status") %>%
-  dplyr::filter(group == "D") %>%
+  dplyr::filter(group == "Denervated") %>%
   mutate(DE = abs(logFC)>log(1.1) & padj < 0.01) %>%
   mutate(DEG = ifelse(abs(logFC)>log(1.1) & padj < 0.01, feature, NA))
 
@@ -609,7 +641,7 @@ Possibility of using Seurat's FindMarker() function for identical results
 
 ```{r}
 det_rate <- rowMeans(seurat_transcriptome@assays$RNA@data)
-meta <- seurat_transcriptome@meta.data %>% mutate(status = factor(status, levels=c("C","D")))
+meta <- seurat_transcriptome@meta.data %>% mutate(status = factor(status, levels=c("Control","Denervated")))
 dds <- DESeqDataSetFromMatrix(seurat_transcriptome@assays$RNA@counts[det_rate > 0.05,],
                               colData=meta,
                               design = ~ status)
@@ -623,15 +655,6 @@ DE_deseq2_transcriptome <- results(dds) %>% as.data.frame() %>%
 
 DE_deseq2_transcriptome
 # write.csv(DE_deseq2_transcriptome, "IPA/DESeq_IIx.csv", row.names=FALSE)
-
-ggplot(DE_deseq2_transcriptome, aes(x = log2FoldChange, y = -log10(padj), col=DE, label=DEG)) +
-  geom_point() +
-  geom_text_repel(max.overlaps = 20) + head(seurat.rna@meta.data)
-
-  geom_vline(xintercept=c(-log2(1.1), log2(1.1), 0), col="#303030", linetype="dotted") +
-  geom_hline(yintercept=-log10(0.01), col="#303030", linetype="dotted") +
-  scale_color_manual(values=c("#909090", "red")) +
-  theme_minimal()
 ```
 
 ### 12.3 GLM for DE 
@@ -850,14 +873,16 @@ plot_cells(seurat.rna.cds, color_cells_by = "pseudotime", cell_size = 0.5, label
 
 ```{r}
 lr_network = readRDS(url("https://zenodo.org/record/7074291/files/lr_network_mouse_21122021.rds"))
-  lr_network = lr_network %>% dplyr::rename(ligand = from, receptor = to) %>% distinct(ligand, receptor) %>% mutate(ligand = make.names(ligand), receptor = make.names(receptor))
-  ligand_target_matrix = readRDS(url("https://zenodo.org/record/7074291/files/ligand_target_matrix_nsga2r_final_mouse.rds"))
-  colnames(ligand_target_matrix) = colnames(ligand_target_matrix) %>% make.names()
-  rownames(ligand_target_matrix) = rownames(ligand_target_matrix) %>% make.names()
+lr_network = lr_network %>% dplyr::rename(ligand = from, receptor = to) %>% distinct(ligand, receptor) %>% mutate(ligand = make.names(ligand), receptor = make.names(receptor))
+ligand_target_matrix = readRDS(url("https://zenodo.org/record/7074291/files/ligand_target_matrix_nsga2r_final_mouse.rds"))
+colnames(ligand_target_matrix) = colnames(ligand_target_matrix) %>% make.names()
+rownames(ligand_target_matrix) = rownames(ligand_target_matrix) %>% make.names()
 ```
 
 ```{r}
 # Convert you Seurat Object 
+# OPTIONAL: Do subset (only myonuclei + NMJ + MTJ)
+# seurat.rna <- subset(seurat.rna, subset = RNA_snn_res.0.6 %in% c(0,2,3,5,6,7,11,14)) 
 sce = Seurat::as.SingleCellExperiment(seurat.rna, assay = "RNA")
 sce = alias_to_symbol_SCE(sce, "mouse") %>% makenames_SCE()
 ```
@@ -880,22 +905,29 @@ receivers_oi = SummarizedExperiment::colData(sce)[,celltype_id] %>% unique()
 ```
 
 ```{r}
-min_cells = 10
+min_cells = 5
 abundance_expression_info = get_abundance_expression_info(sce = sce, sample_id = sample_id, group_id = group_id, celltype_id = celltype_id, min_cells = min_cells, senders_oi = senders_oi, receivers_oi = receivers_oi, lr_network = lr_network, batches = batches)
 ```
 
 ```{r}
-# Vizualize in a R file 
 abundance_expression_info$abund_plot_sample
 ```
 
 ```{r}
 contrasts_oi = c("'Control-Denervated','Denervated-Control'")
-contrast_tbl = tibble(contrast = c("Control-Denervated","Denervated-Control"), group = c("Control","Denervated"))
+contrast_tbl = tibble(contrast = c("Control-Denervated","Denervated-Control"), 
+                      group = c("Control","Denervated"))
+```
+
+```{r}
+# OPTIONAL: Subset our data and only keep cells from patients that belong to the groups of interest 
+sce = sce[, SummarizedExperiment::colData(sce)[,group_id] %in% contrast_tbl$group]
+```
+
+```{r}
 DE_info = get_DE_info(sce = sce, sample_id = sample_id, group_id = group_id, celltype_id = celltype_id, batches = batches, covariates = covariates, contrasts_oi = contrasts_oi, min_cells = min_cells)
 DE_info$celltype_de$de_output_tidy %>% arrange(p_adj)
 celltype_de = DE_info$celltype_de$de_output_tidy
-
 ```
 
 ```{r}
@@ -916,12 +948,12 @@ ligand_activities_targets_DEgenes = suppressMessages(suppressWarnings(get_ligand
   receiver_de = celltype_de,
   receivers_oi = receivers_oi,
   ligand_target_matrix = ligand_target_matrix,
-  logFC_threshold = 0.5,
+  logFC_threshold = 0.75, # 0.75 for paired / 0.5 otherwise
   p_val_threshold = 0.05,
   p_val_adj = F,
   top_n_target = 250,
-  verbose = T, 
-  n.cores = min(8, sender_receiver_de$receiver %>% unique() %>% length()) # 8 cores 
+  verbose = T,
+  n.cores = min(8, sender_receiver_de$receiver %>% unique() %>% length()) # 8 cores
 )))
 ```
 
@@ -931,11 +963,14 @@ ligand_activities_targets_DEgenes$ligand_activities %>% head(20)
 ```
 
 ```{r}
-prioritizing_weights_DE = c("de_ligand" = 1, "de_receptor" = 1)
+prioritizing_weights_DE = c("de_ligand" = 1, 
+                            "de_receptor" = 1)
 prioritizing_weights_activity = c("activity_scaled" = 2)
-prioritizing_weights_expression_specificity = c("exprs_ligand" = 2, "exprs_receptor" = 2)
+prioritizing_weights_expression_specificity = c("exprs_ligand" = 2, 
+                                                "exprs_receptor" = 2)
 prioritizing_weights_expression_sufficiency = c("frac_exprs_ligand_receptor" = 1)
-prioritizing_weights_relative_abundance = c( "abund_sender" = 0, "abund_receiver" = 0)
+prioritizing_weights_relative_abundance = c( "abund_sender" = 0,
+                                             "abund_receiver" = 0)
 
 prioritizing_weights = c(prioritizing_weights_DE, 
                          prioritizing_weights_activity, 
@@ -959,7 +994,7 @@ prioritization_tables = suppressMessages(generate_prioritization_tables(
   sender_receiver_tbl = sender_receiver_tbl,
   grouping_tbl = grouping_tbl,
   prioritizing_weights = prioritizing_weights,
-  fraction_cutoff = 0.05, 
+  fraction_cutoff = 0.05,
   abundance_data_receiver = abundance_expression_info$abundance_data_receiver,
   abundance_data_sender = abundance_expression_info$abundance_data_sender
 ))
@@ -970,8 +1005,8 @@ prioritization_tables$group_prioritization_tbl %>% head(20)
 ```
 
 ```{r}
-# ERROR ? 
-lr_target_prior_cor = lr_target_prior_cor_inference(prioritization_tables$group_prioritization_tbl$receiver %>% unique(), abundance_expression_info, celltype_de, grouping_tbl, prioritization_tables, ligand_target_matrix, logFC_threshold = 0.5, p_val_threshold = 0.05, p_val_adj = F, top_n_LR = NA)
+# ERROR ?!
+lr_target_prior_cor = lr_target_prior_cor_inference(prioritization_tables$group_prioritization_tbl$receiver %>% unique(), abundance_expression_info, celltype_de, grouping_tbl, prioritization_tables, ligand_target_matrix, logFC_threshold = 0.5, p_val_threshold = 0.05, p_val_adj = F, top_n_LR = 250)
 ```
 
 ```{r}
@@ -984,10 +1019,25 @@ multinichenet_output = list(
     prioritization_tables = prioritization_tables,
     grouping_tbl = grouping_tbl #,
     # lr_target_prior_cor = lr_target_prior_cor
-  ) 
+  )
 multinichenet_output = make_lite_output(multinichenet_output, top_n_LR = NA)
 
-saveRDS(multinichenet_output, "multinichenet_output.rds")
+# saveRDS(multinichenet_output, "multinichenet_output.rds")
+```
+
+```{r}
+# Average expression value and fraction of each cell type - sample combination
+multinichenet_output$celltype_info$avg_df %>% head()
+multinichenet_output$celltype_info$frq_df %>% head()
+multinichenet_output$celltype_info$avg_df_group %>% head()
+multinichenet_output$celltype_info$frq_df_group %>% head()
+multinichenet_output$celltype_info$rel_abundance_df %>% head()
+# DE information for each cell type - contrast combination
+multinichenet_output$celltype_de %>% head()
+# Output of the NicheNet ligand activity analysis, and the NicheNet ligand-target inference
+multinichenet_output$ligand_activities_targets_DEgenes$ligand_activities %>% head()
+# Tables with the final prioritization scores (results per group and per sample)
+multinichenet_output$prioritization_tables$group_prioritization_tbl %>% head()
 ```
 
 Visualization of the results of the cell-cell communication analysis
